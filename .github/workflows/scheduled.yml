@@ -1,0 +1,156 @@
+name: Claude Scheduled
+
+# 기록이 있는 날은 아무 일도 하지 않고, 없는 날만 오늘의 주제를 만듭니다.
+# 사람이 남긴 현장 경험이 항상 우선이고, 에이전트는 빈칸만 메웁니다.
+
+on:
+  schedule:
+    - cron: "0 21 * * *"   # 매일 06:00 KST — 기록이 없으면 오늘의 주제
+    - cron: "0 22 * * 6"   # 일요일 07:00 KST (토 22:00 UTC) — 주간 회고
+    - cron: "0 23 1 * *"   # 매월 2일 08:00 KST (1일 23:00 UTC) — 절차 표준화
+  workflow_dispatch:
+    inputs:
+      skill:
+        description: 실행할 스킬 (auto = 예약 규칙 그대로)
+        required: false
+        default: auto
+        type: choice
+        options: [auto, daily-topic, weekly-review, standardize]
+      force:
+        description: 그날 기록이 있어도 오늘의 주제를 생성
+        required: false
+        default: false
+        type: boolean
+
+concurrency:
+  group: vault-write
+  cancel-in-progress: false
+
+permissions:
+  contents: write
+  id-token: write
+
+jobs:
+  run:
+    runs-on: ubuntu-latest
+    outputs:
+      changed: ${{ steps.commit.outputs.changed }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: 어떤 스킬을 돌릴지 결정
+        id: pick
+        env:
+          DISPATCH_SKILL: ${{ inputs.skill }}
+          FORCE: ${{ inputs.force }}
+        run: |
+          set -euo pipefail
+
+          skill=""
+          case "${{ github.event.schedule }}" in
+            "0 22 * * 6") skill=weekly-review ;;
+            "0 23 1 * *") skill=standardize ;;
+            "0 21 * * *") skill=daily-topic ;;
+          esac
+
+          # 수동 실행에서 스킬을 지정했으면 그대로 따릅니다.
+          if [ "${{ github.event_name }}" = "workflow_dispatch" ] && [ "${DISPATCH_SKILL:-auto}" != "auto" ]; then
+            skill="$DISPATCH_SKILL"
+          elif [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
+            skill=daily-topic
+          fi
+
+          if [ -z "$skill" ]; then
+            echo "매칭되는 예약이 없습니다." >&2
+            exit 1
+          fi
+
+          # 오늘의 주제는 "그날 사람이 남긴 기록이 없을 때"만 돕니다.
+          # 판단 기준: 최근 26시간 안에 바뀐 핸즈온 문서 중, 에이전트가 만든 것이 아닌 것.
+          # (26시간 = 24시간 + 러너 지연 여유. 스킬이 만든 문서는 source 로 걸러 냅니다.)
+          if [ "$skill" = "daily-topic" ] && [ "${FORCE:-false}" != "true" ]; then
+            captured=0
+            changed_files=$(git log --since="26 hours ago" --name-only --pretty=format: \
+              -- 00-inbox 01-install 02-runbook 03-troubleshoot 04-reference \
+              | grep -E '\.md$' | sort -u || true)
+
+            for f in $changed_files; do
+              [ -f "$f" ] || continue                      # 삭제·이동된 파일은 무시
+              src=$(sed -n 's/^source:[[:space:]]*//p' "$f" | head -1)
+              case "$src" in
+                daily-topic|weekly-review|standardize) ;;   # 에이전트 산출물은 기록으로 치지 않습니다
+                *) captured=$((captured + 1)); echo "  사람 기록: $f (source=${src:-없음})" ;;
+              esac
+            done
+
+            if [ "$captured" -gt 0 ]; then
+              echo "최근 26시간 안에 핸즈온 기록 ${captured}건이 있습니다. 오늘의 주제를 건너뜁니다."
+              echo "skill=" >> "$GITHUB_OUTPUT"
+              exit 0
+            fi
+            echo "최근 기록 없음 — 오늘의 주제를 생성합니다."
+          fi
+
+          echo "skill=$skill" >> "$GITHUB_OUTPUT"
+          echo "예약 실행: $skill"
+
+      - name: Claude 실행
+        if: steps.pick.outputs.skill != ''
+        uses: anthropics/claude-code-action@v1
+        with:
+          claude_code_oauth_token: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
+          # 공식 Claude GitHub App 설치 없이 러너 토큰으로 동작시킵니다.
+          github_token: ${{ secrets.GITHUB_TOKEN }}
+          prompt: |
+            이 저장소는 DevOps 핸즈온 경험을 마크다운으로 관리하는 저장소입니다.
+            먼저 CLAUDE.md를 읽고 폴더·프론트매터 규약을 그대로 따르세요.
+
+            .claude/skills/${{ steps.pick.outputs.skill }}/SKILL.md 를 읽고 그 절차를 정확히 수행하세요.
+            예약 실행이므로 사용자 입력은 없습니다. 저장소의 기존 문서가 유일한 입력입니다.
+
+            제약:
+            - 문서 폴더(00-inbox ~ 06-archive) 안에서만 쓰기. .github/, scripts/, site/ 는 건드리지 마세요.
+            - 파일을 삭제하지 마세요. 끝난 것은 06-archive/ 로 옮깁니다.
+            - 커밋·푸시하지 마세요. 파일만 남기면 다음 단계가 처리합니다.
+            - 오늘 날짜의 결과물이 이미 있으면 새로 만들지 말고 그 파일을 갱신하세요.
+            - 실행해 보지 않은 명령을 검증된 것처럼 쓰지 마세요. verified 는 실제 검증한 날짜만 채웁니다.
+          claude_args: |
+            --model claude-sonnet-5
+            --allowedTools Read,Write,Edit,Glob,Grep,WebSearch,WebFetch,TodoWrite
+
+      - name: 변경사항 커밋
+        id: commit
+        if: steps.pick.outputs.skill != ''
+        env:
+          SKILL: ${{ steps.pick.outputs.skill }}
+        run: |
+          set -euo pipefail
+          git config user.name  "handson-agent[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+
+          # 프레임워크 파일이 바뀌었다면 되돌립니다 (프롬프트 위반 방지선).
+          git checkout -- .github scripts site package.json package-lock.json site.config.json CLAUDE.md 2>/dev/null || true
+
+          if git diff --quiet && [ -z "$(git ls-files --others --exclude-standard)" ]; then
+            echo "changed=false" >> "$GITHUB_OUTPUT"
+            echo "변경 없음 — 커밋을 건너뜁니다."
+            exit 0
+          fi
+          git add -A
+          git commit -m "$SKILL: 예약 실행 $(date -u +%Y-%m-%d)"
+          git pull --rebase --autostash origin main
+          git push origin HEAD:main
+          echo "changed=true" >> "$GITHUB_OUTPUT"
+
+  publish:
+    needs: run
+    if: needs.run.outputs.changed == 'true'
+    permissions:
+      contents: read
+      pages: write
+      id-token: write
+    uses: ./.github/workflows/pages.yml
+    with:
+      ref: main

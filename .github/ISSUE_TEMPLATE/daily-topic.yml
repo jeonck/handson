@@ -1,0 +1,25 @@
+name: 📅 오늘의 주제
+description: 최신 DevOps 주제 하나를 골라 30분 실습 자료를 지금 만듭니다. (기록이 없는 날 아침 자동으로도 돕니다)
+title: "오늘의 주제 요청"
+labels: ["daily-topic"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        `04-reference/topics.md` 의 주제 범위 안에서 고릅니다. **출처 필수 · 로컬에서 끝나는 실습 · 최근 30일 중복 제외** 가 규칙입니다.
+        다루는 주제를 바꾸려면 그 파일을 고치세요.
+
+  - type: textarea
+    id: focus
+    attributes:
+      label: 오늘만 특별히 볼 것 (선택)
+      description: 비워 두면 선언된 주제 범위 전체에서 고릅니다.
+      placeholder: 오늘은 Terraform state 운영 쪽으로 골라줘
+
+  - type: checkboxes
+    id: ack
+    attributes:
+      label: 확인
+      options:
+        - label: 실습 명령 중 에이전트가 직접 실행하지 못한 단계는 내가 검증하겠습니다.
+          required: true

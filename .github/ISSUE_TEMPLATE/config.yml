@@ -1,0 +1,8 @@
+blank_issues_enabled: true
+contact_links:
+  - name: 🧰 핸즈온 사이트
+    url: https://handson.metacog.co.kr/
+    about: 설치 매뉴얼·작업 절차서·트러블슈팅 가이드를 브라우저에서 봅니다.
+  - name: 📖 설정 가이드
+    url: https://github.com/jeonck/handson/blob/main/SETUP.md
+    about: OAuth 토큰 발급, Pages·커스텀 도메인 활성화 절차.

@@ -1,0 +1,14 @@
+{
+  "name": "handson",
+  "version": "1.0.0",
+  "private": true,
+  "type": "module",
+  "description": "DevOps 핸즈온 경험 저장소 — 설치 매뉴얼·작업 절차서·트러블슈팅 가이드를 마크다운으로 관리하고 GitHub Pages로 발행합니다.",
+  "scripts": {
+    "build": "node scripts/build.mjs",
+    "serve": "node scripts/build.mjs && npx --yes serve dist"
+  },
+  "dependencies": {
+    "marked": "^15.0.0"
+  }
+}

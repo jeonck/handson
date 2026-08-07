@@ -1,0 +1,46 @@
+name: 🛠 핸즈온 기록
+description: 방금 끝낸 설치·작업·장애 대응을 그대로 던지면 카테고리별 문서로 만듭니다.
+title: "핸즈온 기록"
+labels: ["handson"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        **정리하지 마세요.** 셸 히스토리, 에러 메시지, 삽질한 순서가 뒤엉킨 채로 던지는 게 맞습니다.
+        설치 매뉴얼 / 작업 절차서 / 트러블슈팅 가이드 중 어디로 갈지는 에이전트가 판단합니다.
+
+        ⚠️ **토큰·비밀번호·프라이빗 키는 붙여넣지 마세요.** 이 저장소는 공개이고, 에이전트가 마스킹하더라도
+        이슈 본문 자체는 그대로 남습니다.
+
+  - type: textarea
+    id: dump
+    attributes:
+      label: 무슨 일이 있었나
+      description: 문장이 안 되어도 괜찮습니다. 친 명령과 나온 에러를 그대로 붙여넣으면 가장 좋습니다.
+      placeholder: |
+        eks 1.31 클러스터에 argocd 올렸는데 로그인이 계속 리디렉션 루프
+        helm으로 깔았고 ingress-nginx는 이미 있었음
+        결국 server.extraArgs에 --insecure 넣으니까 됨
+        cli는 또 따로 --grpc-web 붙여야 했음
+        다음에 할 때 values 파일 미리 만들어두자
+    validations:
+      required: true
+
+  - type: input
+    id: env
+    attributes:
+      label: 검증 환경 (선택)
+      description: 버전까지 적어 주면 문서에 그대로 들어갑니다. 비워 두면 에이전트가 본문에서 추론하고, 못 하면 비워 둡니다.
+      placeholder: Kubernetes 1.31 (EKS) · Helm 3.16 · ingress-nginx 1.11
+
+  - type: dropdown
+    id: kind
+    attributes:
+      label: 종류 힌트 (선택)
+      description: 확신이 있으면 골라 주세요. 비워 두면 에이전트가 분류합니다.
+      options:
+        - 자동 분류
+        - 설치 매뉴얼
+        - 작업 절차서
+        - 트러블슈팅 가이드
+      default: 0

@@ -1,0 +1,19 @@
+{
+  "title": "handson",
+  "tagline": "설치·절차·장애 대응 — DevOps 현장 경험을 마크다운으로 남기는 저장소",
+  "owner": "jeonck",
+  "repo": "handson",
+  "branch": "main",
+  "locale": "ko-KR",
+  "site": "https://handson.metacog.co.kr",
+  "staleDays": 120,
+  "folders": {
+    "00-inbox": { "label": "Inbox", "domain": "inbox", "hint": "아직 정리하지 않은 현장 메모" },
+    "01-install": { "label": "설치 매뉴얼", "domain": "install", "hint": "빈 환경에서 따라 하면 서는 것" },
+    "02-runbook": { "label": "작업 절차서", "domain": "runbook", "hint": "반복 작업을 같은 결과로 만드는 순서" },
+    "03-troubleshoot": { "label": "트러블슈팅", "domain": "troubleshoot", "hint": "증상에서 원인으로 내려가는 분기" },
+    "04-reference": { "label": "레퍼런스", "domain": "reference", "hint": "도구 비교·설정 근거·주제 선언" },
+    "05-daily": { "label": "데일리", "domain": "daily", "hint": "그날의 주제 한 편" },
+    "06-archive": { "label": "Archive", "domain": "archive", "hint": "폐기된 절차 — 지우지 않고 보관" }
+  }
+}

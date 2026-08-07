@@ -1,0 +1,16 @@
+name: 🔁 주간 회고
+description: 지난 7일 문서를 교차 분석해 반복된 장애와 빠진 절차를 찾습니다. (일요일 아침 자동으로도 돕니다)
+title: "주간 회고 요청"
+labels: ["weekly-review"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        이 스킬은 **문서를 고치지 않습니다.** 관찰만 하고 `05-daily/`에 회고 문서를 남깁니다.
+        절차 개선이 필요하면 그 결과를 보고 `절차 표준화`를 따로 요청하세요.
+
+  - type: textarea
+    id: focus
+    attributes:
+      label: 특별히 봐 줬으면 하는 것 (선택)
+      placeholder: 이번 주 배포 실패가 잦았는데 공통 원인이 있는지 봐줘
