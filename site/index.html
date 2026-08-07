@@ -1,16 +1,16 @@
 <!doctype html>
-<html lang="ko">
+<html lang="en">
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
 <title>handson</title>
-<meta name="description" content="설치·절차·장애 대응 — DevOps 현장 경험을 마크다운으로 남기는 저장소">
+<meta name="description" content="Install guides, runbooks, and incident playbooks — DevOps field experience kept as markdown">
 <meta name="color-scheme" content="light dark">
 <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><text y='.9em' font-size='90'>🧰</text></svg>">
 <link rel="stylesheet" href="styles.css">
 </head>
 <body>
-<a class="skip" href="#main">본문으로 건너뛰기</a>
+<a class="skip" href="#main">Skip to content</a>
 
 <header class="topbar">
   <div class="topbar-in">
@@ -22,63 +22,63 @@
       </span>
     </a>
 
-    <nav class="nav" id="nav" aria-label="주요 영역">
-      <a href="#/" data-view="dashboard">대시보드</a>
-      <a href="#/notes" data-view="notes">문서</a>
-      <a href="#/stacks" data-view="stacks">스택</a>
-      <a href="#/graph" data-view="graph">그래프</a>
-      <a href="#/tasks" data-view="tasks">후속 조치</a>
+    <nav class="nav" id="nav" aria-label="Main sections">
+      <a href="#/" data-view="dashboard">Dashboard</a>
+      <a href="#/notes" data-view="notes">Docs</a>
+      <a href="#/stacks" data-view="stacks">Stacks</a>
+      <a href="#/graph" data-view="graph">Graph</a>
+      <a href="#/tasks" data-view="tasks">Follow-ups</a>
     </nav>
 
     <div class="topbar-actions">
-      <button class="btn-ghost" id="search-open" aria-label="검색 열기" title="검색 (⌘K)">
+      <button class="btn-ghost" id="search-open" aria-label="Open search" title="Search (⌘K)">
         <svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="11" cy="11" r="7"/><path d="m20 20-3.5-3.5"/></svg>
         <kbd>⌘K</kbd>
       </button>
-      <button class="btn-ghost icon" id="theme-toggle" aria-label="테마 전환" title="테마 전환">
+      <button class="btn-ghost icon" id="theme-toggle" aria-label="Toggle theme" title="Toggle theme">
         <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M21 12.8A9 9 0 1 1 11.2 3a7 7 0 0 0 9.8 9.8Z"/></svg>
       </button>
       <button class="btn-primary" id="capture-btn">
-        <span aria-hidden="true">🛠</span> 경험 기록
+        <span aria-hidden="true">🛠</span> Capture
       </button>
     </div>
   </div>
 </header>
 
-<main id="main" class="main"><div class="loading">불러오는 중…</div></main>
+<main id="main" class="main"><div class="loading">Loading…</div></main>
 
 <footer class="footer">
   <div class="footer-in">
-    <span>현장에서 한 번 겪은 것은 <code>.md</code> 하나로 남습니다 — 저장소 전체가 곧 이 사이트입니다.</span>
+    <span>What you hit once in the field stays as one <code>.md</code> — the repository is the site.</span>
     <span class="footer-meta">
-      <a id="repo-link" href="#" rel="noopener">저장소</a>
+      <a id="repo-link" href="#" rel="noopener">Repository</a>
       <span id="build-stamp"></span>
     </span>
   </div>
 </footer>
 
-<!-- 검색 팔레트 -->
+<!-- search palette -->
 <div class="palette" id="palette" hidden>
   <div class="palette-backdrop" data-close></div>
-  <div class="palette-box" role="dialog" aria-modal="true" aria-label="문서 검색">
-    <input id="palette-input" type="search" placeholder="문서 검색…  (제목 · 스택 · 명령어 · 본문)" autocomplete="off" spellcheck="false">
+  <div class="palette-box" role="dialog" aria-modal="true" aria-label="Search docs">
+    <input id="palette-input" type="search" placeholder="Search docs…  (title · stack · command · body)" autocomplete="off" spellcheck="false">
     <ul class="palette-results" id="palette-results"></ul>
-    <div class="palette-foot"><kbd>↑</kbd><kbd>↓</kbd> 이동 <kbd>↵</kbd> 열기 <kbd>esc</kbd> 닫기</div>
+    <div class="palette-foot"><kbd>↑</kbd><kbd>↓</kbd> move <kbd>↵</kbd> open <kbd>esc</kbd> close</div>
   </div>
 </div>
 
-<!-- 캡처 시트 -->
+<!-- capture sheet -->
 <div class="palette" id="capture" hidden>
   <div class="palette-backdrop" data-close></div>
   <div class="capture-box" role="dialog" aria-modal="true" aria-labelledby="capture-title">
-    <h2 id="capture-title">에이전트에게 요청하기</h2>
+    <h2 id="capture-title">Ask the agent</h2>
     <p class="capture-lede">
-      이 사이트는 정적 페이지라 아무 토큰도 들고 있지 않습니다. 요청은 <strong>GitHub 이슈</strong>로 열리고,
-      실제 작업은 시크릿을 가진 Actions 러너에서 Claude가 수행한 뒤 <code>.md</code>를 커밋합니다.
+      This site is static and holds no tokens. Your request opens a <strong>GitHub issue</strong>, and the actual work
+      runs on an Actions runner that has the secret — Claude writes the <code>.md</code> and commits it.
     </p>
     <div class="capture-grid" id="capture-grid"></div>
-    <p class="capture-note">저장소 소유자가 연 이슈만 워크플로를 실행합니다. 기록이 없는 날은 06:00 KST에 오늘의 주제가 자동으로 생성됩니다.</p>
-    <button class="btn-ghost capture-close" data-close>닫기</button>
+    <p class="capture-note">Only issues opened by the repository owner trigger the workflow. On days with no field notes, a topic of the day is generated at 06:00 KST.</p>
+    <button class="btn-ghost capture-close" data-close>Close</button>
   </div>
 </div>
 

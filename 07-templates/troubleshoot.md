@@ -12,51 +12,51 @@ duration:
 risk: low
 ---
 
-<증상 한 줄. 그리고 그 증상이 원인이 아니라 관찰일 뿐이라는 점.>
+<The symptom in one line, and the note that it is an observation rather than a cause.>
 
-## 30초 안에 확인할 것
+## What to check in 30 seconds
 
 ```bash
 ```
 
-| 신호 | 대체로 이것 |
+| Signal | Usually this |
 |---|---|
 |  |  |
 
 ---
 
-## A. <분기 이름>
+## A. <branch name>
 
 ```bash
 ```
 
-조치:
+Actions:
 
 1. 
 2. 
 
-## B. <분기 이름>
+## B. <branch name>
 
 ```bash
 ```
 
-## 임시 조치
+## Stopgap
 
-<서비스를 먼저 살려야 할 때 쓰는 것. 되돌리는 방법을 반드시 함께 적습니다.>
+<What you do when the service has to come back first. Always include how to undo it.>
 
-## 남길 것
+## Leave this behind
 
 ```markdown
-- 증상:
-- 원인:
-- 조치:
-- 재발 방지:
+- Symptom:
+- Cause:
+- Fix:
+- Prevention:
 ```
 
-## 후속 조치
+## Follow-ups
 
 - [ ] 
 
-## 연결
+## Related
 
 [[ ]] — 

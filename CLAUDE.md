@@ -1,88 +1,92 @@
-# handson — DevOps 핸즈온 경험 저장소
+# handson — DevOps hands-on experience repository
 
-Markdown + Git + Claude. 이 저장소의 상태 전부가 `.md` 파일입니다. 데이터베이스도, 서버도 없습니다.
+Markdown + Git + Claude. The entire state of this repository is `.md` files. No database, no server.
 
-목적은 하나입니다 — **한 번 겪은 것을 다음 사람이 그대로 재현할 수 있게 남긴다.** 회고문이 아니라 실행 가능한 문서를 만듭니다.
+There is one goal — **record what you hit once so the next person can reproduce it exactly.** Not a retrospective; an executable document.
 
-## 폴더 규약
+## Language
 
-| 폴더 | 용도 | 언제 쓰나 |
+**Everything in this repository is written in English** — documents, frontmatter, templates, skill instructions, and the site. Field notes may arrive in any language; the document produced from them is English. The site is published for an English-reading audience.
+
+## Folder convention
+
+| Folder | Purpose | When to use |
 |---|---|---|
-| `00-inbox/` | 미분류 현장 메모 | 분류가 애매하면 일단 여기 |
-| `01-install/` | 설치 매뉴얼 | 빈 환경에서 따라 하면 서는 것 |
-| `02-runbook/` | 작업 절차서 | 반복 작업을 같은 결과로 만드는 순서 |
-| `03-troubleshoot/` | 트러블슈팅 가이드 | 증상에서 원인으로 내려가는 분기 |
-| `04-reference/` | 레퍼런스 | 도구 비교, 설정 근거, 주제 선언 |
-| `05-daily/` | 데일리 | 오늘의 주제, 주간 회고 |
-| `06-archive/` | 보관 | 폐기된 절차 — 지우지 않고 옮김 |
-| `07-templates/` | 템플릿 | 새 문서의 출발점 (사이트에 발행되지 않음) |
+| `00-inbox/` | Unsorted field notes | When classification is unclear, park it here |
+| `01-install/` | Install guides | Follow it on an empty environment and it comes up |
+| `02-runbook/` | Runbooks | The order that makes repeated work come out the same |
+| `03-troubleshoot/` | Troubleshooting guides | Branching from symptom down to cause |
+| `04-reference/` | Reference | Tool comparisons, config rationale, topic scope |
+| `05-daily/` | Daily | Topic of the day, weekly reviews |
+| `06-archive/` | Archive | Retired procedures — moved here, never deleted |
+| `07-templates/` | Templates | Starting points for new documents (not published to the site) |
 
-## 문서 형식
+## Document format
 
-모든 문서는 프론트매터로 시작합니다.
+Every document starts with frontmatter.
 
 ```markdown
 ---
-title: Argo CD HA 설치 (Helm)
+title: Argo CD HA install with Helm
 date: 2026-08-07
 domain: install          # inbox | install | runbook | troubleshoot | reference | daily | archive
 tags: [gitops, cd]
 stack: [kubernetes, argocd, helm]
-summary: 한 줄 요약. 사이트 카드에 그대로 노출됩니다.
+summary: One-line summary. Appears verbatim on the site card.
 source: handson          # handson | daily-topic | weekly-review | standardize
 env: Kubernetes 1.31 (EKS) · Helm 3.16
-verified: 2026-08-07     # 실제로 이 절차를 돌려 본 날짜
-duration: 40~60분
+verified: 2026-08-07     # the day this procedure actually ran
+duration: 40–60 min
 risk: medium             # low | medium | high
 ---
 ```
 
-규칙:
+Rules:
 
-- **파일명은 kebab-case ASCII**, 확장자 `.md`. 파일명이 곧 `[[wikilink]]` 대상이고 URL이 됩니다.
-- `summary`는 반드시 채웁니다. 사이트의 카드 미리보기가 이 값을 씁니다.
-- `stack`은 소문자 kebab-case 도구명. 사이트의 스택 축과 검색이 이 값을 씁니다.
-- **`verified`는 실제로 돌려 본 날짜만.** 추측해서 채우지 마세요. 이 값이 거짓이면 사이트의 재검증 지표 전체가 무의미해집니다. 근거가 없으면 비워 둡니다.
-- `risk`: `low` = 되돌리기 쉽고 운영 영향 없음 / `medium` = 서비스 영향 가능, 롤백 있음 / `high` = 되돌릴 수 없는 단계 포함.
-- 날짜는 항상 `YYYY-MM-DD` 절대 표기. "지난주" 같은 상대 표현을 문서에 남기지 않습니다.
-- 후속 조치는 `- [ ] 내용 📅 YYYY-MM-DD` — 이 형식이어야 사이트가 집계합니다.
-- 링크는 `[[파일명]]` (확장자 없이). 아직 없는 문서를 가리켜도 괜찮습니다 — 쓸 거리 표시입니다.
+- **Filenames are lowercase kebab-case ASCII**, extension `.md`. The filename is both the `[[wikilink]]` target and the URL.
+- `summary` is mandatory. The site's card preview uses it.
+- `stack` holds lowercase kebab-case tool names. The site's stack axis and search use it.
+- **`verified` is only ever a day it actually ran.** Never guess. If that value is false, every freshness number on the site is meaningless. With no basis, leave it empty.
+- `risk`: `low` = easy to undo, no production impact / `medium` = can affect service, rollback exists / `high` = includes a step that cannot be undone.
+- Dates are always absolute `YYYY-MM-DD`. No relative expressions like "last week".
+- Follow-ups go under a `## Follow-ups` heading as `- [ ] text 📅 YYYY-MM-DD` — that heading is what makes the site count them as open work rather than as a verification checklist.
+- Links are `[[filename]]` without the extension. Pointing at a document that does not exist yet is fine — it marks the writing queue.
 
-## 절차 문서에 반드시 있어야 하는 것
+## What a procedure document must contain
 
-`install`·`runbook` 문서는 셋이 없으면 미완성입니다.
+`install` and `runbook` documents are incomplete without all three.
 
-1. **검증 체크리스트** — "됐다"의 정의를 체크박스로.
-2. **롤백 또는 중단 기준** — 실패했을 때 어디로 돌아가는가.
-3. **걸린 지점** — 실제로 밟은 함정만. 상상해서 쓰지 않습니다.
+1. **Verification checklist** — the definition of "it worked", as checkboxes.
+2. **Rollback or abort criteria** — where you go back to when it fails.
+3. **Where this bit us** — only traps actually hit. Never imagined.
 
-`troubleshoot` 문서는 증상 → 분기 → 조치 구조를 지킵니다. 원인별로 확인 명령이 붙어 있어야 합니다.
+`troubleshoot` documents keep the symptom → branch → action shape, with a check command attached to each cause.
 
-## 명령을 쓸 때
+## Writing commands
 
-- 실제로 친 형태를 남깁니다. 매끄럽게 다듬어 동작이 바뀌면 안 됩니다.
-- 환경 의존값(호스트, 계정, 리전, ARN, IP)은 `<PLACEHOLDER>`나 변수로 바꿉니다.
-- **자격증명은 절대 남기지 않습니다.** 토큰·비밀번호·키는 `<REDACTED>`로 치환합니다.
-- 코드 블록에 언어를 표시합니다 (`bash`, `yaml`). 사이트가 `bash` 블록의 줄 수를 세어 "따라 할 수 있는 문서"를 구분합니다.
+- Keep the form actually typed. Smoothing it into something that behaves differently is not allowed.
+- Replace environment-specific values (host, account, region, ARN, IP) with `<PLACEHOLDER>` or a variable.
+- **Never keep credentials.** Tokens, passwords, and keys become `<REDACTED>`.
+- Tag code blocks with a language (`bash`, `yaml`). The site counts lines in `bash` blocks to tell a document you follow from a document you read.
 
-## 스킬
+## Skills
 
-`.claude/skills/` 아래가 이 저장소의 동작 전부입니다. 코드가 아니라 마크다운 지시문입니다.
+`.claude/skills/` is the entire behaviour of this repository. Markdown instructions, not code.
 
-- `handson` — 현장 경험 덩어리를 설치/절차/트러블슈팅으로 분류해 문서화
-- `daily-topic` — 기록이 없는 날, 최신 DevOps 주제 하나로 30분 실습 자료 생성
-- `weekly-review` — 지난 7일 문서를 교차 분석 (문서를 고치지 않고 관찰만)
-- `standardize` — 흩어진 기록을 표준 절차서로 승격
+- `handson` — sort a lump of field experience into install / runbook / troubleshooting and document it
+- `daily-topic` — on days with no notes, build a 30-minute lab from one current DevOps topic
+- `weekly-review` — cross-read the last 7 days (observe only, never edit documents)
+- `standardize` — promote scattered records into a standard runbook
 
-## 절대 하지 말 것
+## Never
 
-- 문서를 **삭제**하지 마세요. 폐기된 절차는 `06-archive/`로 옮깁니다.
-- `site/`, `scripts/`, `.github/` 는 프레임워크입니다. 스킬이 여기에 쓰지 않습니다.
-- 프론트매터 없는 `.md`를 만들지 마세요. 빌드에서 누락됩니다.
-- **실행해 보지 않은 명령을 검증된 것처럼 쓰지 마세요.** 공식 문서 기준이면 그렇게 밝힙니다.
-- 겪지 않은 함정을 "흔한 문제"로 지어내지 마세요.
+- **Delete** a document. Retired procedures move to `06-archive/`.
+- Write into `site/`, `scripts/`, or `.github/` — those are framework, and skills do not touch them.
+- Create an `.md` without frontmatter. The build skips it.
+- **Present a command you never ran as verified.** If it came from official documentation, say so.
+- Invent a "common problem" you never actually hit.
 
-## 빌드
+## Build
 
-`node scripts/build.mjs` → `dist/` 에 정적 사이트 생성. GitHub Actions가 push마다 실행합니다.
-사이트는 <https://handson.metacog.co.kr> 입니다.
+`node scripts/build.mjs` → static site in `dist/`. GitHub Actions runs it on every push.
+The site is <https://handson.metacog.co.kr>.

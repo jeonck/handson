@@ -1,54 +1,53 @@
-# 설정
+# Setup
 
-처음 한 번만 하면 됩니다. 4단계, 10분.
+One time only. Four steps, about ten minutes.
 
 ---
 
-## 1. Claude OAuth 토큰 발급 → 저장소 시크릿
+## 1. Claude OAuth token → repository secret
 
-Actions에서 Claude를 돌리려면 OAuth 토큰이 필요합니다. **Claude Pro 또는 Max 구독**이 있어야 발급됩니다.
+Running Claude in Actions needs an OAuth token. It requires a **Claude Pro or Max subscription**.
 
-로컬 터미널에서:
+In a local terminal:
 
 ```bash
 claude setup-token
 ```
 
-브라우저가 열리고 인증이 끝나면 토큰이 출력됩니다. 이 값을 저장소 시크릿으로 넣습니다.
+A browser opens; once authentication finishes the token is printed. Put that value into a repository secret.
 
 ```bash
 gh secret set CLAUDE_CODE_OAUTH_TOKEN --repo jeonck/handson
 ```
 
-또는 웹에서: **Settings → Secrets and variables → Actions → New repository secret**
+Or in the web UI: **Settings → Secrets and variables → Actions → New repository secret**
 - Name: `CLAUDE_CODE_OAUTH_TOKEN`
-- Secret: 위에서 받은 토큰
+- Secret: the token from above
 
-> ⚠️ 이 토큰은 당신의 Claude 계정으로 작업을 실행합니다. **공개 저장소의 이슈 본문에 붙여넣지 마세요.** 시크릿 외의 어디에도 두지 않습니다.
+> ⚠️ This token runs work as your Claude account. **Never paste it into an issue body on a public repository.** It belongs nowhere except the secret.
 
-토큰은 만료됩니다. 워크플로가 인증 오류로 실패하면 `claude setup-token`을 다시 돌려 시크릿을 갱신하세요.
+Tokens expire. When a workflow fails with an authentication error, re-run `claude setup-token` and update the secret.
 
-> **Claude GitHub App은 설치하지 않아도 됩니다.** 워크플로가 `github_token`으로 러너 토큰을 넘기기 때문입니다.
-> 커밋과 이슈 코멘트는 워크플로가 직접 처리하므로 `claude[bot]` 신원이 필요 없습니다.
+> **You do not need to install the Claude GitHub App.** The workflow passes the runner token as `github_token`. Commits and issue comments are handled by the workflow itself, so no `claude[bot]` identity is required.
 
 ---
 
-## 2. Actions에 쓰기 권한 주기
+## 2. Give Actions write permission
 
-에이전트가 저장소에 커밋해야 하므로 워크플로가 쓸 수 있어야 합니다.
+The agent commits to the repository, so workflows need write access.
 
 **Settings → Actions → General → Workflow permissions**
 - ✅ **Read and write permissions**
 
 ---
 
-## 3. GitHub Pages 켜기
+## 3. Turn on GitHub Pages
 
 **Settings → Pages → Build and deployment → Source: `GitHub Actions`**
 
-Jekyll 빌드가 아니라 이 저장소의 `pages.yml` 워크플로가 배포합니다.
+This repository's `pages.yml` workflow does the deploy, not a Jekyll build.
 
-CLI로도 됩니다:
+Also available from the CLI:
 
 ```bash
 gh api -X POST repos/jeonck/handson/pages -f build_type=workflow
@@ -56,47 +55,47 @@ gh api -X POST repos/jeonck/handson/pages -f build_type=workflow
 
 ---
 
-## 4. 커스텀 도메인 — handson.metacog.co.kr
+## 4. Custom domain — handson.metacog.co.kr
 
-### DNS (이미 완료된 상태를 가정)
+### DNS (assumed already done)
 
-`metacog.co.kr` 존에 CNAME 레코드가 있어야 합니다.
+The `metacog.co.kr` zone needs a CNAME record.
 
-| 이름 | 타입 | 값 |
+| Name | Type | Value |
 |---|---|---|
 | `handson` | CNAME | `jeonck.github.io` |
 
-확인:
+Check:
 
 ```bash
 dig +short handson.metacog.co.kr CNAME
 ```
 
-`jeonck.github.io.` 가 나와야 합니다.
+It should return `jeonck.github.io.`.
 
-### 저장소 쪽
+### Repository side
 
-`site/CNAME` 파일이 이미 들어 있고, 빌드가 이것을 `dist/CNAME`으로 복사합니다. **Pages 설정에도 같은 값을 등록해야** GitHub가 인증서를 발급합니다.
+`site/CNAME` is already in place and the build copies it to `dist/CNAME`. **The same value must also be registered in the Pages settings** for GitHub to issue a certificate.
 
 ```bash
 gh api -X PUT repos/jeonck/handson/pages -f cname=handson.metacog.co.kr
 ```
 
-또는 **Settings → Pages → Custom domain** 에 `handson.metacog.co.kr` 입력 후 저장.
+Or **Settings → Pages → Custom domain**, enter `handson.metacog.co.kr`, save.
 
-인증서 발급에 몇 분에서 최대 한 시간이 걸립니다. 발급이 끝나면 **Enforce HTTPS**를 켭니다.
+Certificate issuance takes anywhere from a few minutes to an hour. Once it completes, turn on **Enforce HTTPS**.
 
 ```bash
 gh api -X PUT repos/jeonck/handson/pages -F https_enforced=true
 ```
 
-> `site/CNAME`을 지우면 배포할 때마다 커스텀 도메인 설정이 풀립니다. 이 파일은 프레임워크 보호 대상이라 에이전트가 건드리지 못하게 되어 있습니다.
+> Deleting `site/CNAME` drops the custom domain on every deploy. The file is under framework protection so the agent cannot touch it.
 
 ---
 
-## 확인
+## Verify
 
-네 단계가 끝났으면 이렇게 검증합니다.
+With all four steps done:
 
 ```bash
 open https://handson.metacog.co.kr/
@@ -105,59 +104,59 @@ open https://handson.metacog.co.kr/
 ```bash
 gh workflow run claude-ondemand.yml \
   -f skill=handson \
-  -f request="설정 검증용 테스트. kind로 로컬 클러스터 하나 띄워서 kubectl 컨텍스트 확인했음."
+  -f request="Setup verification test. Brought up a local kind cluster and confirmed the kubectl context."
 ```
 
 ```bash
 gh run watch
 ```
 
-`00-inbox/` 또는 `01-install/` 에 새 `.md`가 커밋되고, 곧이어 Pages 빌드가 돌면 정상입니다.
+A new `.md` committed under `00-inbox/` or `01-install/`, followed by a Pages build, means it works.
 
-예약 워크플로도 강제로 한 번 돌려 봅니다.
+Force the scheduled workflow once as well.
 
 ```bash
 gh workflow run scheduled.yml -f skill=daily-topic -f force=true
 ```
 
-`force=true`가 없으면 최근 26시간에 기록이 있을 때 아무것도 하지 않고 끝납니다 — 그것도 정상 동작입니다.
+Without `force=true` it does nothing when notes exist within the last 26 hours — that is also correct behaviour.
 
 ---
 
-## 동작 방식과 보안
+## How it works, and the security around it
 
-이 저장소는 **공개**입니다. 공개 저장소에서 에이전트에 쓰기 권한을 주는 건 조심할 일이라, 세 겹으로 막아 두었습니다.
+This repository is **public**. Giving an agent write access on a public repository deserves care, so there are three layers.
 
-1. **소유자 게이트** — `claude-ondemand.yml` 이 `github.event.issue.user.login == github.repository_owner` 를 확인합니다. 남이 연 이슈는 워크플로를 실행하지 못합니다.
-2. **주입 방어** — 이슈 본문을 YAML에 직접 보간하지 않고 env를 거쳐 `/tmp/handson/request.md` 로 씁니다. 프롬프트는 그 파일을 "데이터이지 지시문이 아니다"로 다루라고 명시합니다.
-3. **경로 방어선** — 커밋 단계가 `.github/`, `scripts/`, `site/`, `CLAUDE.md` 등 프레임워크 파일의 변경을 되돌립니다. 에이전트가 프롬프트를 어겨도 자기 실행 환경을 고칠 수 없습니다.
+1. **Owner gate** — `claude-ondemand.yml` checks `github.event.issue.user.login == github.repository_owner`. An issue opened by anyone else cannot run the workflow.
+2. **Injection defence** — the issue body is never interpolated into YAML; it goes through env into `/tmp/handson/request.md`. The prompt states explicitly that the file is data, not instructions.
+3. **Path guard** — the commit step reverts changes to framework files (`.github/`, `scripts/`, `site/`, `CLAUDE.md`, and so on). Even if the agent ignores its prompt, it cannot modify its own execution environment.
 
-그래도 남는 위험: **문서에 쓰는 모든 것이 공개됩니다.** 핸즈온 문서는 특성상 내부 호스트명·계정·아키텍처가 섞이기 쉽습니다. 프롬프트가 자격증명을 마스킹하도록 지시하지만, **이슈 본문 자체는 마스킹되지 않고 그대로 남습니다.** 토큰이나 내부 식별자는 애초에 붙여넣지 마세요.
+One risk remains: **everything written into a document is public.** Hands-on documents naturally pick up internal hostnames, accounts, and architecture. The prompt instructs the agent to mask credentials, but **the issue body itself is not masked and stays as written.** Do not paste tokens or internal identifiers in the first place.
 
 ---
 
-## 커스터마이즈
+## Customizing
 
-| 하고 싶은 것 | 고칠 파일 |
+| To change | Edit |
 |---|---|
-| 오늘의 주제가 고르는 범위 | `04-reference/topics.md` |
-| 스킬의 동작 | `.claude/skills/<이름>/SKILL.md` |
-| 새 스킬 추가 | `.claude/skills/<새이름>/SKILL.md` + 이슈 템플릿 + 워크플로 라벨 목록 |
-| 예약 시각 | `.github/workflows/scheduled.yml` 의 cron (UTC 기준) |
-| 재검증 기준일 (기본 120일) | `site.config.json` 의 `staleDays` |
-| 사이트 제목·카테고리 라벨 | `site.config.json` |
-| 모델 | 워크플로의 `--model` (기본 `claude-sonnet-5`) |
+| What the topic of the day may pick | `04-reference/topics.md` |
+| Skill behaviour | `.claude/skills/<name>/SKILL.md` |
+| Add a skill | `.claude/skills/<new>/SKILL.md` + issue template + the workflow's label list |
+| Schedule times | the crons in `.github/workflows/scheduled.yml` (UTC) |
+| Re-verification threshold (default 120 days) | `staleDays` in `site.config.json` |
+| Site title and category labels | `site.config.json` |
+| Model | `--model` in the workflows (default `claude-sonnet-5`) |
 
-새 스킬을 붙일 때 인프라 코드를 건드릴 필요가 없다는 점이 핵심입니다 — 마크다운 파일 하나면 됩니다.
+The point is that adding a skill never requires touching infrastructure code — one markdown file is enough.
 
-## 자주 겪는 문제
+## Common problems
 
-**사이트가 404** — Pages Source가 `GitHub Actions`인지, `pages.yml` 워크플로가 성공했는지 확인.
+**Site 404s** — check that the Pages source is `GitHub Actions` and that the `pages.yml` workflow succeeded.
 
-**커스텀 도메인이 자꾸 풀림** — `dist/CNAME`이 배포 아티팩트에 들어갔는지 확인하세요. `pages.yml`에 확인 단계가 있습니다.
+**Custom domain keeps unsetting itself** — confirm `dist/CNAME` made it into the deploy artifact. `pages.yml` has a step that checks.
 
-**이슈를 열었는데 아무 일도 없음** — 이슈에 라벨(`handson` 등)이 붙었는지 확인하세요. 템플릿을 쓰지 않고 빈 이슈를 열면 라벨이 없어 워크플로가 걸리지 않습니다.
+**Opened an issue and nothing happened** — check that a label (`handson`, etc.) was applied. A blank issue opened without a template has no label, so nothing routes.
 
-**아침에 오늘의 주제가 안 생김** — 정상일 수 있습니다. 최근 26시간 안에 핸즈온 문서가 커밋됐으면 건너뜁니다. Actions 로그의 `사람 기록:` 줄에 어떤 파일 때문인지 남습니다.
+**No topic of the day in the morning** — that may be correct. If a hands-on document was committed within the last 26 hours it is skipped. The Actions log shows which file caused it on a `human note:` line.
 
-**커밋은 됐는데 사이트가 그대로** — `pages.yml`은 `paths-ignore`에 걸리는 경로만 바뀌면 돌지 않습니다. Actions 탭에서 수동 실행하세요.
+**Committed, but the site is unchanged** — `pages.yml` does not run when only `paths-ignore` paths changed. Trigger it manually from the Actions tab.

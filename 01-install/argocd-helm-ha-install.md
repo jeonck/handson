@@ -1,32 +1,32 @@
 ---
-title: Argo CD HA 설치 (Helm) — 인그레스·SSO 없이 첫 배포까지
+title: Argo CD HA install with Helm — from empty cluster to first sync
 date: 2026-08-07
 domain: install
 tags: [gitops, cd, kubernetes]
 stack: [kubernetes, argocd, helm, ingress-nginx]
-summary: 빈 Kubernetes 클러스터에 Argo CD를 HA 구성으로 올리고, 인그레스로 노출한 뒤 app-of-apps 부트스트랩까지 마치는 절차. 차트 버전 고정과 gRPC 경로가 실패 지점입니다.
+summary: Stand up Argo CD in HA on a fresh Kubernetes cluster, expose it through an ingress, and bootstrap app-of-apps. Pinning the chart version and getting the gRPC path right are where this goes wrong.
 source: handson
 env: Kubernetes 1.31 (EKS) · Helm 3.16 · ingress-nginx 1.11 · argo-cd chart 7.x
 verified: 2026-08-07
-duration: 40~60분
+duration: 40–60 min
 risk: medium
 ---
 
-클러스터에 GitOps 컨트롤 플레인을 처음 세우는 절차입니다. **관리형 클러스터(EKS/GKE/AKS) 기준**이고, ingress-nginx가 이미 떠 있다고 가정합니다. SSO(OIDC)와 Argo CD Image Updater는 이 문서 범위 밖입니다 — 먼저 붙이면 로그인이 안 될 때 원인이 두 배로 늘어납니다.
+Standing up a GitOps control plane on a cluster that does not have one. Written for a **managed cluster (EKS/GKE/AKS)** and assumes ingress-nginx is already running. SSO (OIDC) and Argo CD Image Updater are out of scope — wire those in first and every login failure has two possible causes instead of one.
 
-## 사전 조건
+## Prerequisites
 
-| 항목 | 확인 명령 | 기대값 |
+| Item | Check | Expected |
 |---|---|---|
-| 클러스터 접근 | `kubectl auth can-i create namespace` | `yes` |
-| Helm | `helm version --short` | `v3.14` 이상 |
-| 인그레스 컨트롤러 | `kubectl get ingressclass` | `nginx` 존재 |
-| DNS | `dig +short argocd.example.com` | 인그레스 LB 주소 |
-| TLS | `kubectl -n argocd get secret argocd-tls` 또는 cert-manager ClusterIssuer | 둘 중 하나 |
+| Cluster access | `kubectl auth can-i create namespace` | `yes` |
+| Helm | `helm version --short` | `v3.14` or newer |
+| Ingress controller | `kubectl get ingressclass` | `nginx` present |
+| DNS | `dig +short argocd.example.com` | ingress LB address |
+| TLS | `kubectl -n argocd get secret argocd-tls`, or a cert-manager ClusterIssuer | one of the two |
 
-DNS가 아직 안 붙었으면 이 문서를 시작하지 마세요. 인그레스 없이 `port-forward`로 검증한 뒤 나중에 노출하면, 뒤에서 다룰 gRPC 문제를 배포 당일에 처음 만나게 됩니다.
+If DNS is not pointed yet, do not start this document. Verifying through `port-forward` and exposing later means you meet the gRPC problem below on rollout day instead of today.
 
-## 1. 네임스페이스와 차트 버전 고정
+## 1. Namespace and a pinned chart version
 
 ```bash
 kubectl create namespace argocd
@@ -34,39 +34,39 @@ helm repo add argo https://argoproj.github.io/argo-helm
 helm repo update argo
 ```
 
-차트 버전을 **반드시 고정**합니다. `helm upgrade --install`을 버전 없이 돌리면 다음 배포 때 다른 Argo CD가 올라옵니다.
+**Pin the chart version.** Running `helm upgrade --install` without one means a different Argo CD lands on the next deploy.
 
 ```bash
 helm search repo argo/argo-cd --versions | head -5
 ```
 
-출력 첫 줄의 `CHART VERSION`을 아래 변수에 넣습니다. 이 값과 `APP VERSION`(Argo CD 자체 버전)을 문서 프론트매터의 `env`에도 적어 두세요.
+Take `CHART VERSION` from the first line. Record that value and the `APP VERSION` (Argo CD itself) in this document's `env` frontmatter.
 
 ```bash
-export ARGOCD_CHART_VERSION="<위에서 고른 버전>"
+export ARGOCD_CHART_VERSION="<version you picked>"
 export ARGOCD_HOST="argocd.example.com"
 ```
 
-## 2. values 파일
+## 2. values file
 
 ```yaml
 # argocd-values.yaml
 global:
   domain: argocd.example.com
 
-# HA: redis-ha 3 노드 + 각 컴포넌트 다중화.
-# 단일 노드 테스트 클러스터에서는 redis-ha가 안티어피니티 때문에 Pending으로 남습니다.
+# HA: a 3-node redis-ha plus replicas on each component.
+# On a single-node test cluster redis-ha stays Pending forever because of anti-affinity.
 redis-ha:
   enabled: true
 
 controller:
-  replicas: 1          # 애플리케이션 컨트롤러는 샤딩 전까지 1로 두는 것이 안전합니다
+  replicas: 1          # keep the application controller at 1 until you shard it
 repoServer:
   replicas: 2
 server:
   replicas: 2
-  # 인그레스에서 TLS를 끝내므로 서버는 평문으로 받습니다.
-  # 이 플래그가 없으면 nginx -> argocd-server 사이에서 무한 리디렉션(ERR_TOO_MANY_REDIRECTS)이 납니다.
+  # TLS terminates at the ingress, so the server should accept plaintext.
+  # Without this flag nginx -> argocd-server ends in an infinite redirect (ERR_TOO_MANY_REDIRECTS).
   extraArgs:
     - --insecure
   ingress:
@@ -84,9 +84,9 @@ configs:
     server.insecure: true
 ```
 
-`global.domain`, `ingress.hostname`은 실제 도메인으로 바꿉니다. 여기까지가 "웹 UI가 뜨는" 최소 구성입니다.
+Replace `global.domain` and `ingress.hostname` with the real host. This is the minimum that gets the web UI up.
 
-## 3. 설치
+## 3. Install
 
 ```bash
 helm upgrade --install argocd argo/argo-cd \
@@ -96,16 +96,16 @@ helm upgrade --install argocd argo/argo-cd \
   --wait --timeout 10m
 ```
 
-`--wait`가 10분을 넘겨 실패하면 대부분 `redis-ha`입니다. 노드가 3개 미만이거나 zone이 하나면 안티어피니티를 만족하지 못해 Pod가 Pending으로 남습니다.
+When `--wait` blows past 10 minutes it is almost always `redis-ha`. Fewer than three nodes, or a single zone, and anti-affinity cannot be satisfied, so the pods sit in Pending.
 
 ```bash
 kubectl -n argocd get pods -o wide
 kubectl -n argocd get events --sort-by=.lastTimestamp | tail -20
 ```
 
-단일 노드 환경이면 `redis-ha.enabled: false`로 내리고 다시 돌립니다. 운영에서는 노드를 늘리는 쪽이 맞습니다 — [[pod-crashloopbackoff]]의 스케줄링 절을 함께 보세요.
+On a single-node environment set `redis-ha.enabled: false` and re-run. In production, add nodes instead — see the scheduling section of [[pod-crashloopbackoff]].
 
-## 4. 초기 로그인
+## 4. First login
 
 ```bash
 kubectl -n argocd get secret argocd-initial-admin-secret \
@@ -116,18 +116,18 @@ kubectl -n argocd get secret argocd-initial-admin-secret \
 argocd login "$ARGOCD_HOST" --username admin --grpc-web
 ```
 
-`--grpc-web`이 핵심입니다. ingress-nginx가 HTTP/2 gRPC를 그대로 넘기지 못하는 구성이 흔해서, 이 플래그 없이 로그인하면 `rpc error: code = Unavailable`로 끊깁니다. 매번 붙이기 싫으면 `argocd login ... --grpc-web` 후 `~/.config/argocd/config`에 저장된 컨텍스트를 그대로 쓰면 됩니다.
+`--grpc-web` is the part that matters. Plenty of ingress-nginx setups will not pass HTTP/2 gRPC through cleanly, and without the flag the login dies with `rpc error: code = Unavailable`. Once you have logged in with it, the context saved in `~/.config/argocd/config` keeps working.
 
-비밀번호를 바꾸고 초기 시크릿을 지웁니다.
+Change the password and delete the bootstrap secret.
 
 ```bash
 argocd account update-password
 kubectl -n argocd delete secret argocd-initial-admin-secret
 ```
 
-## 5. app-of-apps 부트스트랩
+## 5. app-of-apps bootstrap
 
-Argo CD를 UI로만 쓰면 클릭이 곧 미신고 변경이 됩니다. 루트 Application 하나만 손으로 만들고, 나머지는 Git이 관리하게 둡니다.
+Driving Argo CD from the UI turns every click into an unrecorded change. Create exactly one root Application by hand and let Git own everything below it.
 
 ```yaml
 # bootstrap/root.yaml
@@ -143,7 +143,7 @@ spec:
   source:
     repoURL: https://github.com/<org>/<gitops-repo>.git
     targetRevision: main
-    path: apps            # 이 디렉터리 안의 Application 매니페스트들이 나머지 전부를 만듭니다
+    path: apps            # the Application manifests in here create everything else
   destination:
     server: https://kubernetes.default.svc
     namespace: argocd
@@ -160,55 +160,55 @@ kubectl apply -f bootstrap/root.yaml
 argocd app wait root --health --timeout 300
 ```
 
-프라이빗 저장소면 먼저 자격증명을 넣습니다.
+For a private repository, register credentials first.
 
 ```bash
 argocd repo add https://github.com/<org>/<gitops-repo>.git \
   --username <user> --password <token>
 ```
 
-## 6. 검증 체크리스트
+## 6. Verification checklist
 
-여기까지 전부 통과해야 "설치 완료"입니다. 하나라도 건너뛰면 실제 장애 때 이 문서를 못 믿게 됩니다.
+All of it has to pass before you call this installed. Skip one and you will not trust this document during a real incident.
 
-- [ ] `kubectl -n argocd get pods` — 모든 Pod `Running`, `RESTARTS` 0
-- [ ] `https://argocd.example.com` 브라우저 로그인 성공, 인증서 경고 없음
-- [ ] `argocd app list` — CLI에서 목록 조회 성공 (gRPC 경로 확인)
+- [ ] `kubectl -n argocd get pods` — every pod `Running`, `RESTARTS` at 0
+- [ ] `https://argocd.example.com` logs in from a browser with no certificate warning
+- [ ] `argocd app list` — the CLI can list apps (this is the gRPC path check)
 - [ ] `argocd app get root` — `Synced` / `Healthy`
-- [ ] Git에서 매니페스트 한 줄 고치고 push → 3분 안에 자동 반영 (selfHeal 확인)
-- [ ] `kubectl -n argocd delete pod -l app.kubernetes.io/name=argocd-server` 후 UI 재접속 — HA 복구 확인
-- [ ] 초기 admin 시크릿 삭제 완료
+- [ ] Change one line of a manifest in Git, push, and see it applied within 3 minutes (selfHeal works)
+- [ ] `kubectl -n argocd delete pod -l app.kubernetes.io/name=argocd-server`, then reload the UI — HA recovery works
+- [ ] Initial admin secret deleted
 
-## 7. 롤백
+## 7. Rollback
 
 ```bash
 helm history argocd -n argocd
 helm rollback argocd <REVISION> -n argocd --wait
 ```
 
-완전 제거는 순서가 있습니다. Application에 finalizer가 걸려 있어서, 차트를 먼저 지우면 네임스페이스가 `Terminating`에서 멈춥니다.
+Full removal has an order to it. Applications carry a finalizer, so deleting the chart first leaves the namespace stuck in `Terminating`.
 
 ```bash
-kubectl -n argocd delete applications --all      # 먼저
-helm uninstall argocd -n argocd                  # 그다음
+kubectl -n argocd delete applications --all      # first
+helm uninstall argocd -n argocd                  # then this
 kubectl delete namespace argocd
 ```
 
-## 걸린 지점
+## Where this bit us
 
-**`ERR_TOO_MANY_REDIRECTS`** — `--insecure` 없이 인그레스 TLS를 붙인 경우입니다. argocd-server가 HTTP를 HTTPS로 리디렉트하는데 인그레스가 다시 평문으로 내려보내면서 루프가 됩니다. values의 `server.extraArgs`와 `configs.params.server.insecure` 둘 다 확인하세요.
+**`ERR_TOO_MANY_REDIRECTS`** — ingress TLS without `--insecure`. argocd-server redirects HTTP to HTTPS, the ingress sends it back as plaintext, and the loop never ends. Check both `server.extraArgs` and `configs.params.server.insecure`.
 
-**CLI만 안 되고 UI는 됨** — gRPC입니다. `--grpc-web`을 붙이거나, 인그레스에 `nginx.ingress.kubernetes.io/backend-protocol: "GRPC"`를 쓰는 별도 호스트(`grpc.argocd.example.com`)를 하나 더 팝니다. 한 호스트에서 HTTP와 gRPC를 동시에 처리하려는 시도는 대체로 시간 낭비였습니다.
+**UI works, CLI does not** — gRPC. Either pass `--grpc-web`, or open a second host (`grpc.argocd.example.com`) whose ingress carries `nginx.ingress.kubernetes.io/backend-protocol: "GRPC"`. Trying to serve HTTP and gRPC from one host has mostly been a waste of an afternoon.
 
-**차트 버전 미고정** — 3주 뒤 무관한 PR의 CI가 `helm upgrade`를 돌리면서 Argo CD 마이너 버전이 올라가 CRD가 바뀐 사례가 있었습니다. `--version` 고정과 renovate/dependabot로 명시적 PR을 받는 쪽이 맞습니다.
+**Unpinned chart** — three weeks later, CI for an unrelated PR ran `helm upgrade` and pulled a new Argo CD minor with changed CRDs. Pin with `--version` and let renovate/dependabot raise an explicit PR instead.
 
-## 후속 조치
+## Follow-ups
 
-- [ ] OIDC(SSO) 연동 후 `admin` 계정 비활성화 📅 2026-08-21
-- [ ] Argo CD 자체를 root app에 포함시켜 self-managed로 전환
-- [ ] 백업: `argocd-cm`, `argocd-rbac-cm`, Application 매니페스트를 Git에 커밋
+- [ ] Wire up OIDC (SSO), then disable the local `admin` account 📅 2026-08-21
+- [ ] Bring Argo CD itself under the root app so it becomes self-managed
+- [ ] Back up `argocd-cm`, `argocd-rbac-cm`, and the Application manifests into Git
 
-## 연결
+## Related
 
-[[pod-crashloopbackoff]] — 설치 직후 Pod가 재시작을 반복할 때 진단 순서.
-[[k8s-node-drain-replace]] — Argo CD가 올라간 노드를 교체할 때의 절차. controller가 1 replica라 드레인 순서가 중요합니다.
+[[pod-crashloopbackoff]] — when pods keep restarting right after the install.
+[[k8s-node-drain-replace]] — replacing the node Argo CD landed on. The controller runs at 1 replica, so drain order matters.

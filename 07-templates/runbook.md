@@ -12,49 +12,49 @@ duration:
 risk: 
 ---
 
-<언제 이 절차를 실행하는가. 한 번에 몇 개까지 되는가. 되돌릴 수 있는 지점은 어디까지인가.>
+<When you run this. How many at a time. Up to which step it stays reversible.>
 
-## 사전 점검 (작업 시작 전, 별도 시간에)
+## Pre-checks (before the maintenance window, not during)
 
 ### 1. 
 
 ```bash
 ```
 
-### 2. 커뮤니케이션
+### 2. Communication
 
-- 변경 티켓 번호
-- 공지 대상과 시점
-- 알람 억제 범위와 만료 시간
+- Change ticket number
+- Who is told, and when
+- Alert silence scope and expiry
 
-## 실행
+## Execution
 
-### 1단계 — <이름> (되돌릴 수 있음)
-
-```bash
-```
-
-롤백: 
-
-### 2단계 — <이름>
+### Step 1 — <name> (reversible)
 
 ```bash
 ```
 
-## 중단 기준 (하나라도 해당하면 즉시 멈춤)
+Rollback: 
+
+### Step 2 — <name>
+
+```bash
+```
+
+## Abort criteria (any one of these — stop immediately)
 
 - 
 - 
 
-## 검증 체크리스트
+## Verification checklist
 
 - [ ] 
 - [ ] 
 
-## 후속 조치
+## Follow-ups
 
 - [ ] 
 
-## 연결
+## Related
 
 [[ ]] — 

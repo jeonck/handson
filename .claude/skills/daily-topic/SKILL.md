@@ -1,97 +1,99 @@
 ---
 name: daily-topic
-description: 선언된 주제 범위 안에서 최신 DevOps 주제 하나를 골라 30분 안에 따라 할 수 있는 실습 자료를 만든다. "오늘의 주제", "daily topic" 요청이나 daily-topic 라벨 이슈, 그리고 그날 핸즈온 기록이 없을 때 예약 실행으로 사용.
+description: Picks one current DevOps topic inside the declared scope and builds hands-on material that can be followed in 30 minutes. Use for "topic of the day" requests, issues labelled daily-topic, and the scheduled run on days with no field notes.
 ---
 
-# Daily Topic — 오늘의 주제 한 편
+# Daily Topic — one topic a day
 
-기록이 없는 날을 빈칸으로 두지 않기 위한 스킬입니다. **사용자가 직접 남긴 경험이 있는 날에는 이 스킬이 돌지 않습니다** — 예약 워크플로가 그날 커밋을 먼저 확인합니다.
+This skill exists so that a day with no notes does not stay blank. **It does not run on days when the user recorded something themselves** — the scheduled workflow checks the day's commits first.
 
-만드는 것은 **뉴스 요약이 아니라 실습 자료**입니다. 읽고 끝나는 글은 실패입니다.
+What you produce is **hands-on material, not a news summary.** A piece that ends when you finish reading it has failed.
 
-## 규칙 (타협 없음)
+Write everything in English. This repository publishes an English site.
 
-1. **주제 선택 근거에 출처를 단다.** "요즘 뜬다"는 근거가 아닙니다. 릴리스 노트·공식 문서·SIG 논의 링크와 날짜를 답니다.
-2. **실습은 실제로 도는 것만.** 명령을 지어내지 않습니다. 공식 문서에서 확인한 절차만 씁니다. 확인하지 못한 단계는 그렇게 표시합니다.
-3. **로컬에서 끝나야 한다.** kind/minikube/docker/로컬 CLI 범위. 클라우드 계정이나 결제가 필요한 실습은 고르지 않습니다.
-4. **버전을 명시한다.** 차트·CRD·이미지 태그는 고정 값으로 쓰고, 최신 태그 확인 방법을 함께 적습니다.
-5. **모르면 모른다고 쓴다.** 빈칸을 그럴듯한 문장으로 메우지 않습니다.
+## Rules (not negotiable)
 
-## 절차
+1. **Cite why the topic was chosen.** "It's trending" is not a reason. Link release notes, official docs, or SIG discussion, with a date.
+2. **Only commands that actually run.** Do not invent them. Use procedures confirmed in official documentation, and mark any step you could not confirm as such.
+3. **It has to finish locally.** kind / minikube / docker / local CLI. Never choose a lab that needs a cloud account or spend.
+4. **State versions.** Chart, CRD, and image tags go in as fixed values, alongside how to find the current tag.
+5. **Say when you do not know.** Do not fill a blank with a plausible sentence.
 
-### 1. 주제 범위를 읽는다
+## Procedure
 
-`04-reference/topics.md` 의 `topics`·`제외`·`환경 기준선`. 이 파일이 없으면 최근 `01-install/`·`02-runbook/`·`03-troubleshoot/` 문서의 `stack` 값에서 추론하고, 자료 하단에 "주제 파일이 없어 추론함"이라고 밝힙니다.
+### 1. Read the scope
 
-### 2. 이미 다룬 것을 제외한다
+`04-reference/topics.md` — `topics`, `Excluded`, `Baseline environment`. If the file is missing, infer from the `stack` values of recent documents in `01-install/`, `02-runbook/`, and `03-troubleshoot/`, and say at the bottom of the material that the scope file was absent and the scope was inferred.
+
+### 2. Rule out what is already covered
 
 ```
-05-daily/ 의 최근 30개 파일 제목과 stack
-01-install/ · 02-runbook/ · 03-troubleshoot/ 의 stack
+titles and stack of the last 30 files in 05-daily/
+stack across 01-install/ · 02-runbook/ · 03-troubleshoot/
 ```
 
-**최근 30일 안에 다룬 주제는 다시 고르지 않습니다.** 같은 도구라도 각도가 완전히 다르면(설치 → 업그레이드 → 장애 대응) 허용하되, 무엇이 다른지 본문에 밝힙니다.
+**Do not pick a topic covered within the last 30 days.** The same tool from a genuinely different angle (install → upgrade → incident response) is allowed, but say in the body what is different.
 
-### 3. 후보를 찾는다
+### 3. Find candidates
 
-주제 영역당 WebSearch 1~2회. 최근 릴리스, 공식 블로그, 프로젝트 문서 변경을 봅니다. 후보 3~5건을 뽑고 **WebFetch로 1차 출처 본문을 확인**합니다. 검색 스니펫만 보고 쓰지 마세요 — 스니펫의 날짜는 자주 틀립니다.
+One or two WebSearch calls per topic area. Look at recent releases, official blogs, and project documentation changes. Shortlist three to five and **confirm the primary source with WebFetch**. Do not write from search snippets — their dates are frequently wrong.
 
-선택 기준, 우선순위 순:
+Selection criteria, in priority order:
 
-1. 사용자의 기존 문서와 **직접 닿는가** (같은 stack, 또는 대체 관계)
-2. 30분 실습으로 검증 가능한가
-3. 지금 알아 두면 다음 분기에 실제로 쓰는가
+1. Does it **touch the user's existing documents** (same stack, or a replacement for one)?
+2. Can it be verified in a 30-minute lab?
+3. Will knowing it now matter next quarter?
 
-### 4. 쓴다
+### 4. Write it
 
-`05-daily/YYYY-MM-DD-<주제-슬러그>.md`. 템플릿은 `07-templates/daily.md`.
+`05-daily/YYYY-MM-DD-<topic-slug>.md`, from `07-templates/daily.md`.
 
 ```markdown
 ---
-title: 오늘의 주제 — <무엇을 하는지>
-date: <오늘>
+title: Topic of the day — <what it does>
+date: <today>
 domain: daily
-tags: [daily, <영역>]
-stack: [<다루는 도구>]
-summary: <한 문장. 무엇을 실습하고 무엇이 걸리는지.>
+tags: [daily, <area>]
+stack: [<tools covered>]
+summary: <one sentence: what you practise and what bites.>
 source: daily-topic
 ---
 
-## 왜 이 주제인가
-<개념 설명 + 출처 링크와 날짜. 표로 비교할 수 있으면 표로.>
+## Why this topic
+<Concept, plus source links with dates. Use a table where a comparison fits.>
 
-## 30분 실습
-<붙여 넣으면 도는 명령. 각 단계에 왜 그 단계인지 반 줄.>
+## 30-minute lab
+<Commands that run when pasted. Half a line per step on why that step exists.>
 
-### 검증
-<"됐다"를 확인하는 명령과 기대 출력.>
+### Verify
+<The command that confirms "it worked", and the expected output.>
 
-### 정리
-<실습 환경을 지우는 명령. 이게 없으면 다음에 안 합니다.>
+### Clean up
+<How to tear the lab down. Without this, nobody does it a second time.>
 
-## 함정
-<처음 하면 반드시 밟는 것. 각각 한 문단.>
+## Traps
+<What you will definitely hit on the first attempt. One paragraph each.>
 
-## 우리 환경에 적용한다면
-<기존 문서를 [[링크]]로 걸고, 실제로 걸릴 지점을 짚습니다.>
+## If we applied this here
+<Link existing documents with [[wikilinks]] and name what would actually block us.>
 
-## 후속 조치
+## Follow-ups
 - [ ] ...
 ```
 
-### 5. 연결한다
+### 5. Link
 
-같은 `stack`을 가진 기존 문서에 `[[wikilink]]`를 겁니다. 실습 자료가 저장소와 이어지지 않으면 그냥 튜토리얼 스크랩일 뿐입니다.
+Attach `[[wikilinks]]` to existing documents sharing a `stack`. Material that does not connect back to the repository is just a scraped tutorial.
 
-## 하지 말 것
+## Do not
 
-- 클라우드 비용이 드는 실습을 고르는 것
-- 실행해 보지 않은 명령을 "이렇게 하면 됩니다"로 쓰는 것 — 공식 문서에서 확인했으면 "공식 문서 기준"이라고 밝힙니다
-- 오늘의 주제를 `01-install/` 같은 정식 폴더에 쓰는 것 — 실제로 손으로 검증하기 전까지는 `05-daily/`에 둡니다
-- 같은 주제를 30일 안에 반복하는 것
+- Choose a lab that costs cloud money
+- Write "just do this" for a command you never ran — if it came from official documentation, say so
+- Put the topic of the day in a real folder like `01-install/` — it stays in `05-daily/` until a human verifies it
+- Repeat a topic within 30 days
 
-## 마지막에 보고할 것
+## Report at the end
 
-- 고른 주제와 **왜 그것을 골랐는지** (후보 중 탈락한 것도 한 줄씩)
-- 출처 링크와 날짜
-- 실습 중 **직접 확인하지 못하고 문서에만 의존한 단계** — 사용자가 먼저 검증할 대상
+- The topic you chose and **why that one** (one line each for the candidates you dropped)
+- Source links with dates
+- **Steps you could not run and took from documentation only** — the user verifies those first

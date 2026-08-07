@@ -1,10 +1,12 @@
 #!/usr/bin/env node
-// vault(.md) -> dist/ 정적 사이트.
-// 입력은 숫자 폴더의 마크다운, 출력은 data/index.json + data/notes/<slug>.json + 복사된 site/.
+// Markdown (.md) -> dist/ static site.
+// Input is the markdown under the numbered folders; output is data/index.json,
+// data/notes/<slug>.json, and a copy of site/.
 //
-// secbrain의 발행 파이프라인을 핸즈온 문서용으로 확장했습니다.
-// 추가된 축: stack(도구), env(검증 환경), verified(마지막 검증일), duration, risk.
-// 핸즈온 문서는 "쓴 날"보다 "마지막으로 실제로 돌려 본 날"이 중요하므로 verified를 1급 필드로 다룹니다.
+// Extends the secbrain publishing pipeline for hands-on documentation.
+// Added axes: stack (tools), env (verified environment), verified (last verification), duration, risk.
+// For a procedure, "the day it last actually ran" matters more than "the day it was written",
+// so `verified` is treated as a first-class field.
 
 import { readFile, writeFile, mkdir, readdir, rm, cp, stat } from "node:fs/promises";
 import { existsSync } from "node:fs";
@@ -20,7 +22,7 @@ const STALE_DAYS = config.staleDays || 120;
 
 /* ---------- frontmatter ---------- */
 
-// 노트 프론트매터에 필요한 만큼의 YAML 부분집합: 스칼라, 인라인 배열, 블록 배열.
+// Just enough YAML for our frontmatter: scalars, inline arrays, block arrays.
 function parseFrontmatter(raw) {
   const m = raw.match(/^---\r?\n([\s\S]*?)\r?\n---\r?\n?([\s\S]*)$/);
   if (!m) return { data: {}, body: raw };
@@ -64,14 +66,15 @@ const asList = (v) =>
 
 /* ---------- extraction ---------- */
 
-// 코드 블록/인라인 코드를 제외한 본문. 링크·태그가 셸 예시에서 잡히는 것을 막는다.
-// 핸즈온 문서는 코드 블록 비중이 크므로 이 필터가 특히 중요하다 (#!/bin/bash, --tag= 등).
+// Body with code blocks and inline code removed, so links and tags are not picked up from
+// shell examples. Hands-on docs are mostly code blocks, which makes this filter load-bearing
+// (#!/bin/bash, --tag=, and friends).
 function stripCode(body) {
   return stripFences(body).replace(/`[^`\n]*`/g, "");
 }
 
-// 펜스 블록만 제거. 태스크 텍스트는 인라인 코드(`admin` 계정)를 잃으면 뜻이 달라지므로
-// 여기까지만 걷어 내고 백틱은 표시 직전에 없앱니다.
+// Fenced blocks only. Task text loses its meaning without inline code (the `admin` account),
+// so we stop here and strip the backticks just before display.
 function stripFences(body) {
   return body.replace(/```[\s\S]*?```/g, "");
 }
@@ -91,13 +94,14 @@ function extractTags(body, fmTags) {
   return [...out];
 }
 
-// Obsidian Tasks 형식: - [ ] 내용 📅 YYYY-MM-DD
+// Obsidian Tasks format: - [ ] text 📅 YYYY-MM-DD
 //
-// 핸즈온 문서에는 체크박스가 두 종류 섞여 있습니다.
-//  - 검증 체크리스트: 절차를 실행할 때마다 새로 확인하는 것. 저장소 차원의 할 일이 아님.
-//  - 후속 조치: 이 문서를 쓴 뒤에 남은 진짜 할 일.
-// 직전 헤딩으로 둘을 가릅니다. 섞어서 세면 "열린 태스크" 숫자가 의미를 잃습니다.
-const FOLLOWUP_HEADING = /후속\s*조치|follow[- ]?up|todo/i;
+// Hands-on docs mix two kinds of checkbox.
+//  - Verification checklist: re-checked every time the procedure runs. Not a repo-level todo.
+//  - Follow-up: real work left over after writing the doc.
+// The nearest preceding heading separates them. Counted together, "open tasks" means nothing.
+// The Korean form is kept so docs written before the site switched to English still classify.
+const FOLLOWUP_HEADING = /follow[- ]?ups?|next steps|todo|후속\s*조치/i;
 
 function extractTasks(body) {
   const tasks = [];
@@ -122,7 +126,8 @@ function extractTasks(body) {
   return tasks;
 }
 
-// 절차서에서 실행 가능한 명령이 몇 개인지. "읽는 문서"와 "따라 하는 문서"를 구분하는 신호.
+// How many runnable commands a doc carries — the signal that separates something you read
+// from something you follow.
 function countCommands(body) {
   let n = 0;
   for (const block of body.matchAll(/```(\w*)\r?\n([\s\S]*?)```/g)) {
@@ -167,7 +172,7 @@ for (const dir of VAULT_DIRS) {
     const raw = await readFile(file, "utf8");
     const { data, body } = parseFrontmatter(raw);
 
-    // 프론트매터 없는 파일은 건너뛴다 — CLAUDE.md의 규약.
+    // Skip files with no frontmatter — the convention in CLAUDE.md.
     if (!Object.keys(data).length) {
       console.warn(`  skip (no frontmatter): ${rel}`);
       continue;
@@ -205,8 +210,8 @@ notes.sort((a, b) => (a.date < b.date ? 1 : a.date > b.date ? -1 : a.title.local
 
 /* ---------- resolve links ---------- */
 
-// wikilink는 확장자 없는 파일명(base)을 가리킨다. base -> slug 로 해석하고,
-// 해석되지 않는 링크는 "아직 없는 문서"로 남겨 둔다 (다음에 쓸 거리).
+// A wikilink points at a filename without its extension. Resolve base -> slug and leave
+// anything unresolved as a "doc that does not exist yet" (i.e. the writing queue).
 const byBase = new Map();
 for (const n of notes) if (!byBase.has(n.base)) byBase.set(n.base, n.slug);
 const bySlug = new Map(notes.map((n) => [n.slug, n]));
@@ -234,8 +239,8 @@ for (const n of notes) {
 const escapeHtml = (s) =>
   s.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;").replace(/"/g, "&quot;");
 
-// 절차 문서는 본문 안에서 "→ C절 참조" 식으로 서로를 가리킵니다.
-// marked v15는 헤딩 id를 자동으로 붙이지 않으므로 GitHub와 같은 규칙으로 직접 만듭니다.
+// Procedures cross-reference themselves in the body ("see section C").
+// marked v15 no longer adds heading ids, so we generate them with GitHub-like rules.
 const slugCounts = new Map();
 const headingSlug = (text) => {
   const base =
@@ -262,8 +267,8 @@ marked.use({
 });
 
 function renderBody(note) {
-  slugCounts.clear(); // 문서마다 id 네임스페이스를 새로 시작한다
-  // wikilink를 마크다운 링크로 치환한 뒤 마크다운을 렌더한다.
+  slugCounts.clear(); // fresh id namespace per document
+  // Rewrite wikilinks into markdown links, then render the markdown.
   let src = note.body.replace(
     /\[\[([^\]|#]+)(?:#([^\]|]+))?(?:\|([^\]]+))?\]\]/g,
     (_all, target, _anchor, alias) => {
@@ -272,7 +277,7 @@ function renderBody(note) {
       const slug = byBase.get(name) ?? byBase.get(path.basename(name));
       return slug
         ? `[${label}](#/note/${encodeURIComponent(slug)})`
-        : `<span class="wikilink-missing" title="아직 없는 문서">${escapeHtml(label)}</span>`;
+        : `<span class="wikilink-missing" title="This doc does not exist yet">${escapeHtml(label)}</span>`;
     }
   );
 
@@ -294,8 +299,9 @@ const allTasks = notes.flatMap((n) => n.tasks.map((t) => ({ ...t, note: n.slug, 
 const followups = allTasks.filter((t) => t.kind === "followup");
 const checklists = allTasks.filter((t) => t.kind === "checklist");
 
-// 핸즈온 문서의 수명: 마지막 검증일이 STALE_DAYS를 넘겼거나 아예 없는 것.
-// 절차서는 틀린 채로 남아 있는 것이 없는 것보다 위험하므로 대시보드 1급 지표로 올린다.
+// Shelf life: last verified more than STALE_DAYS ago, or never verified at all.
+// A procedure that is wrong is more dangerous than one that does not exist, so this is a
+// first-class dashboard metric.
 const PROCEDURAL = ["install", "runbook", "troubleshoot"];
 const freshness = notes
   .filter((n) => PROCEDURAL.includes(n.domain))
@@ -329,7 +335,7 @@ const stats = {
   staleDays: STALE_DAYS,
   staleList: stale.slice(0, 8),
   byFolder: Object.fromEntries(VAULT_DIRS.map((d) => [d, notes.filter((n) => n.folder === d).length])),
-  // 최근 12주 작성 히트맵용 일간 버킷
+  // Daily buckets for the 12-week writing heatmap
   activity: Array.from({ length: 84 }, (_, i) => {
     const day = daysAgo(83 - i);
     return { date: day, count: notes.filter((n) => n.date === day).length };
@@ -384,8 +390,8 @@ const index = {
     risk: n.risk,
     tasksOpen: n.tasks.filter((t) => !t.done && t.kind === "followup").length,
     linkCount: n.resolved.length + backlinks.get(n.slug).length,
-    // 검색용 평문 — 코드 블록과 마크다운 기호를 걷어낸 소문자 본문.
-    // 명령 자체를 검색하고 싶은 경우가 많아 stack/env는 따로 이어 붙인다.
+    // Plain text for search — lowercased body with code blocks and markdown syntax stripped.
+    // People often search for the tool rather than the prose, so stack/env are appended.
     search: (
       n.title + " " + n.summary + " " + n.tags.join(" ") + " " + n.stack.join(" ") + " " + n.env + " " + stripCode(n.body)
     )
@@ -426,7 +432,7 @@ for (const n of notes) {
   );
 }
 
-// SPA 딥링크 404 폴백 (해시 라우팅이라 보통 필요 없지만, 잘못된 경로도 앱으로 흡수)
+// 404 fallback for deep links (hash routing rarely needs it, but a bad path lands in the app)
 await cp(path.join(DIST, "index.html"), path.join(DIST, "404.html"));
 await writeFile(path.join(DIST, ".nojekyll"), "");
 

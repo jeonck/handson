@@ -1,25 +1,25 @@
-name: 📅 오늘의 주제
-description: 최신 DevOps 주제 하나를 골라 30분 실습 자료를 지금 만듭니다. (기록이 없는 날 아침 자동으로도 돕니다)
-title: "오늘의 주제 요청"
+name: 📅 Topic of the day
+description: Build a 30-minute lab from one current DevOps topic right now. (Also runs automatically on mornings with no notes.)
+title: "Topic of the day"
 labels: ["daily-topic"]
 body:
   - type: markdown
     attributes:
       value: |
-        `04-reference/topics.md` 의 주제 범위 안에서 고릅니다. **출처 필수 · 로컬에서 끝나는 실습 · 최근 30일 중복 제외** 가 규칙입니다.
-        다루는 주제를 바꾸려면 그 파일을 고치세요.
+        The topic is picked from the scope in `04-reference/topics.md`. The rules are **sources required · lab finishes locally · no repeats within 30 days**.
+        Edit that file to change what gets covered.
 
   - type: textarea
     id: focus
     attributes:
-      label: 오늘만 특별히 볼 것 (선택)
-      description: 비워 두면 선언된 주제 범위 전체에서 고릅니다.
-      placeholder: 오늘은 Terraform state 운영 쪽으로 골라줘
+      label: Anything specific for today (optional)
+      description: Leave it empty and it picks from the whole declared scope.
+      placeholder: pick something around Terraform state operations today
 
   - type: checkboxes
     id: ack
     attributes:
-      label: 확인
+      label: Acknowledge
       options:
-        - label: 실습 명령 중 에이전트가 직접 실행하지 못한 단계는 내가 검증하겠습니다.
+        - label: I will verify any lab step the agent could not run itself.
           required: true

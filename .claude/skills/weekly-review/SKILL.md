@@ -1,77 +1,79 @@
 ---
 name: weekly-review
-description: 지난 7일의 핸즈온 문서를 교차 분석해 반복된 장애, 빠진 절차, 오래된 검증을 찾아낸다. "주간 회고", "위클리 리뷰" 요청이나 weekly-review 라벨 이슈, 일요일 예약 실행 시 사용.
+description: Cross-reads the last 7 days of hands-on documents to surface repeated failures, missing procedures, and stale verification. Use for "weekly review" requests, issues labelled weekly-review, and the Sunday scheduled run.
 ---
 
-# Weekly Review — 한 주를 가로질러 보기
+# Weekly Review — reading across the week
 
-개별 문서는 각자 맞습니다. 문제는 **여러 문서를 겹쳐 놨을 때 보이는 것**입니다. 이 스킬은 새 지식을 만들지 않고 이미 있는 문서 사이의 패턴만 찾습니다.
+Individual documents are each correct. The problem is **what only appears when you lay several of them on top of each other.** This skill creates no new knowledge; it finds patterns among documents that already exist.
 
-## 입력
+Write in English.
 
-지난 7일에 생성·수정된 모든 `.md` + 전체 저장소의 `verified` 날짜.
+## Input
 
-## 절차
+Every `.md` created or modified in the last 7 days, plus the `verified` dates across the whole repository.
 
-### 1. 이번 주 문서를 모은다
+## Procedure
 
-`00-inbox/` ~ `05-daily/` 에서 `date`가 지난 7일 안인 문서. 없으면 그렇게 쓰고 2번으로 넘어갑니다 — 빈 주를 인정하는 것도 회고입니다.
+### 1. Collect the week
 
-### 2. 다섯 가지를 본다
+Documents in `00-inbox/` … `05-daily/` whose `date` falls in the last 7 days. If there are none, say so and move to step 2 — acknowledging an empty week is also a review.
 
-**① 반복된 증상** — 서로 다른 문서에 같은 원인이 두 번 이상 나오면 그건 개별 사고가 아니라 구조 문제입니다. 어떤 문서들에서 나왔는지 경로와 함께 짚습니다.
+### 2. Look for five things
 
-**② 절차 없이 처리된 작업** — `03-troubleshoot/`에 있는데 대응 절차가 `02-runbook/`에 없는 것. 다음에 또 하게 될 작업입니다.
+**① Repeats** — the same cause appearing in two or more separate documents is a structural problem, not an isolated incident. Name the documents with their paths.
 
-**③ 검증이 오래된 문서** — `verified`가 120일을 넘겼거나 비어 있는 절차 문서. 가장 오래된 순으로 최대 5건.
+**② Work handled without a procedure** — something in `03-troubleshoot/` whose response procedure is missing from `02-runbook/`. You will do that work again.
 
-**④ 끊어진 후속 조치** — 기한이 지났는데 열려 있는 태스크(`- [ ]` + 📅 과거 날짜).
+**③ Stale verification** — procedure documents whose `verified` is over 120 days old or empty. Oldest first, at most five.
 
-**⑤ 고립된 문서** — `[[링크]]`가 안 걸린 문서. 검색으로만 도달 가능한 문서는 사실상 없는 문서입니다.
+**④ Dropped follow-ups** — tasks still open (`- [ ]`) with a 📅 date in the past.
 
-### 3. 쓴다
+**⑤ Isolated documents** — documents with no `[[link]]` attached. A document reachable only by search is effectively absent.
+
+### 3. Write it
 
 `05-daily/YYYY-MM-DD-weekly.md`:
 
 ```markdown
 ---
-title: 주간 회고 <YYYY-MM-DD>
-date: <오늘>
+title: Weekly review <YYYY-MM-DD>
+date: <today>
 domain: daily
 tags: [weekly]
 stack: []
-summary: <이번 주 가장 중요한 발견 한 문장.>
+summary: <the single most important finding of the week, in one sentence.>
 source: weekly-review
 ---
 
-## 이번 주에 남은 것
-<문서 수, 카테고리 분포. 숫자만이 아니라 무엇을 했던 주인지 한 문단.>
+## What the week left behind
+<Document count and category spread. Not only numbers — one paragraph on what kind of week it was.>
 
-## 반복된 것
-<② 같은 원인이 두 번 이상 — 근거 문서를 [[링크]]로.>
+## What repeated
+<② the same cause twice or more — cite the evidence documents as [[links]].>
 
-## 절차로 승격할 것
-<트러블슈팅만 있고 런북이 없는 작업. 없으면 "없음".>
+## Should become a procedure
+<Troubleshooting with no matching runbook. "None" if there is none.>
 
-## 재검증 대상
-| 문서 | 마지막 검증 | 경과 |
+## Due for re-verification
+| Document | Last verified | Age |
 |---|---|---|
 
-## 놓친 후속 조치
-- [ ] <원문 그대로, 어느 문서에서 왔는지 표시>
+## Follow-ups that slipped
+- [ ] <verbatim, with the document it came from>
 
-## 다음 주에 할 것
-<3개 이하. 근거 없는 다짐은 쓰지 않습니다.>
+## Next week
+<Three or fewer. No resolutions without evidence.>
 ```
 
-### 4. 하지 않을 것
+### 4. Do not
 
-- **문서를 고치지 않습니다.** 회고는 관찰만 합니다. 절차 개선은 `standardize` 스킬의 일입니다.
-- 없는 패턴을 만들어 내지 않습니다. 이번 주에 문서가 두 개면 "패턴 없음"이 정답입니다.
-- 칭찬이나 격려를 쓰지 않습니다.
+- **Do not edit documents.** A review observes. Improving procedures is the `standardize` skill's job.
+- Do not manufacture a pattern that is not there. With two documents in the week, "no pattern" is the correct answer.
+- Do not write praise or encouragement.
 
-## 마지막에 보고할 것
+## Report at the end
 
-- 분석한 문서 수
-- 찾은 패턴 수와 각각의 근거 문서 경로
-- 재검증 대상 중 **가장 위험한 것 하나** (risk: high이면서 오래된 것)
+- How many documents you analysed
+- How many patterns you found, with the evidence path for each
+- **The single most dangerous item due for re-verification** (high risk and old)

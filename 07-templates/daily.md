@@ -1,5 +1,5 @@
 ---
-title: 오늘의 주제 — 
+title: Topic of the day — 
 date: 
 domain: daily
 tags: [daily]
@@ -8,41 +8,41 @@ summary:
 source: daily-topic
 ---
 
-## 왜 이 주제인가
+## Why this topic
 
-<출처 링크와 날짜를 반드시 포함. 근거 없는 "요즘 뜨는" 은 쓰지 않습니다.>
+<Source link and date required. "Trending lately" is not a reason.>
 
-## 30분 실습
+## 30-minute lab
 
 ### 1. 
 
 ```bash
 ```
 
-### 2. 검증
+### 2. Verify
 
 ```bash
 ```
 
-기대값: 
+Expected: 
 
-### 정리
+### Clean up
 
 ```bash
 ```
 
-## 함정
+## Traps
 
-<처음 하면 반드시 밟는 것. 각각 한 문단.>
+<What you will definitely hit on the first attempt. One paragraph each.>
 
-## 우리 환경에 적용한다면
+## If we applied this here
 
 - 
 
-## 후속 조치
+## Follow-ups
 
 - [ ] 
 
-## 연결
+## Related
 
-[[topics]] — 이 주제가 선택된 근거.
+[[topics]] — why this topic was selected.

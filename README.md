@@ -1,90 +1,90 @@
 # 🧰 handson
 
-**설치 매뉴얼 · 작업 절차서 · 트러블슈팅 가이드.** DevOps 현장에서 한 번 겪은 것을 다음 사람이 그대로 재현할 수 있게 남기는 저장소입니다. 데이터베이스도, 서버도 없습니다 — 상태 전부가 이 저장소 안의 `.md` 파일입니다.
+**Install guides, runbooks, and incident playbooks.** A repository for recording what you hit once in the field so the next person can reproduce it exactly. No database, no server — the entire state is `.md` files in this repository.
 
 🌐 **<https://handson.metacog.co.kr>**
 
 ---
 
-## 이게 뭔가
+## What this is
 
-작업이 끝난 직후의 기억은 3일이면 사라집니다. 그래서 두 가지를 붙였습니다.
+Three days after the work, the memory is gone. So two things are bolted on.
 
-1. **정적 사이트** — 저장소의 마크다운을 카테고리·스택·검색·재검증 대시보드로 발행합니다.
-2. **온디맨드 에이전트** — 사이트의 버튼이 GitHub 이슈를 열면, Actions에서 Claude가 실행되어 문서를 만들고 커밋합니다.
+1. **A static site** — publishes the repository's markdown as categories, stacks, search, and a re-verification dashboard.
+2. **An on-demand agent** — a button on the site opens a GitHub issue; Actions then runs Claude, which writes the document and commits it.
 
-## 어떻게 도는가
+## How it runs
 
 ```
-사이트에서 "경험 기록" 클릭
-   ↓  (브라우저에 토큰 0개 — 그냥 이슈 열기 링크입니다)
-GitHub 이슈 생성  ·  라벨: handson
+Click "Capture" on the site
+   ↓  (zero tokens in the browser — it is just an issue link)
+GitHub issue created  ·  label: handson
    ↓
-Actions: 소유자 확인 → 스킬 라우팅 → Claude Code 실행 (OAuth 토큰은 러너 시크릿에만)
+Actions: owner check → skill routing → Claude Code runs (the OAuth token lives only in runner secrets)
    ↓
-.md 커밋 & 푸시  →  이슈에 결과 코멘트 후 자동 닫힘
+.md committed & pushed  →  result commented on the issue, which auto-closes
    ↓
-Pages 워크플로 재빌드  →  사이트에 반영
+Pages workflow rebuilds  →  live on the site
 ```
 
-**기록이 없는 날은 비워 두지 않습니다.** 매일 06:00 KST에 예약 워크플로가 최근 26시간의 커밋을 확인합니다.
+**Days with no notes do not stay blank.** At 06:00 KST a scheduled workflow inspects the last 26 hours of commits.
 
-- 사람이 남긴 핸즈온 기록이 있으면 → **아무것도 하지 않습니다.**
-- 없으면 → `04-reference/topics.md` 의 주제 범위에서 최신 DevOps 주제 하나를 골라 **30분 실습 자료**를 만들어 `05-daily/`에 커밋합니다.
+- Field notes written by a human → **it does nothing.**
+- None → it picks one current DevOps topic within the scope in `04-reference/topics.md` and commits a **30-minute lab** to `05-daily/`.
 
-에이전트가 만든 문서(`source: daily-topic` 등)는 "기록 있음"으로 치지 않습니다. 자기가 쓴 글로 다음 날 자기를 멈추게 하면 루프가 죽습니다.
+Documents the agent produced (`source: daily-topic` and friends) do not count as notes. Letting the agent's own writing suppress it the next morning kills the loop.
 
-## 폴더
+## Folders
 
-| 폴더 | 용도 |
+| Folder | Purpose |
 |---|---|
-| `00-inbox/` | 미분류 현장 메모 |
-| `01-install/` | 설치 매뉴얼 |
-| `02-runbook/` | 작업 절차서 |
-| `03-troubleshoot/` | 트러블슈팅 가이드 |
-| `04-reference/` | 도구 비교·설정 근거·주제 선언 |
-| `05-daily/` | 오늘의 주제, 주간 회고 |
-| `06-archive/` | 폐기된 절차 (삭제하지 않고 보관) |
-| `07-templates/` | 문서 템플릿 |
+| `00-inbox/` | Unsorted field notes |
+| `01-install/` | Install guides |
+| `02-runbook/` | Runbooks |
+| `03-troubleshoot/` | Troubleshooting guides |
+| `04-reference/` | Tool comparisons, config rationale, topic scope |
+| `05-daily/` | Topic of the day, weekly reviews |
+| `06-archive/` | Retired procedures (moved, never deleted) |
+| `07-templates/` | Document templates |
 
-## 이 저장소가 다르게 다루는 것
+## What this treats differently
 
-일반 위키와의 차이는 프론트매터 세 칸입니다.
+The difference from a normal wiki is three frontmatter fields.
 
-| 필드 | 왜 |
+| Field | Why |
 |---|---|
-| `env` | 어떤 버전에서 검증했는지. 없으면 그 절차는 "언젠가 되던 것"입니다 |
-| `verified` | **실제로 돌려 본 날짜.** 사이트 대시보드가 이 값으로 재검증 대상을 뽑습니다 |
-| `risk` | 되돌릴 수 있는 작업인지. 절차서를 열기 전에 알아야 하는 것 |
+| `env` | Which versions it was verified against. Without it, a procedure is something that "used to work" |
+| `verified` | **The day it actually ran.** The dashboard uses it to pick what needs re-verification |
+| `risk` | Whether the work can be undone — something you need to know before opening the procedure |
 
-`verified`가 120일을 넘겼거나 비어 있는 절차 문서는 대시보드 첫 화면에 올라옵니다. **절차서는 틀린 채로 남아 있는 편이 없는 것보다 위험하기 때문입니다.**
+Procedure documents whose `verified` is over 120 days old, or empty, appear on the dashboard's first screen. **A procedure that is wrong is more dangerous than one that does not exist.**
 
-## 스킬
+## Skills
 
-| 스킬 | 하는 일 | 트리거 |
+| Skill | What it does | Trigger |
 |---|---|---|
-| `handson` | 엉킨 현장 기록을 설치/절차/트러블슈팅으로 분류해 문서화 | 이슈 · 로컬 |
-| `daily-topic` | 최신 주제 하나로 30분 실습 자료 (출처 필수·로컬 실습·30일 중복 제외) | 이슈 · 기록 없는 날 06:00 KST |
-| `weekly-review` | 지난 7일 문서를 교차 분석해 반복 패턴 추출 | 이슈 · 일요일 07:00 KST |
-| `standardize` | 흩어진 기록을 표준 절차서로 승격 | 이슈 · 매월 |
+| `handson` | Sorts tangled field notes into install / runbook / troubleshooting and documents them | issue · local |
+| `daily-topic` | One current topic as a 30-minute lab (sources required, local-only, no repeats within 30 days) | issue · 06:00 KST on days with no notes |
+| `weekly-review` | Cross-reads the last 7 days for repeated patterns | issue · Sunday 07:00 KST |
+| `standardize` | Promotes scattered records into a standard runbook | issue · monthly |
 
-`.claude/skills/` 아래가 동작 전부입니다 — 코드가 아니라 마크다운 지시문입니다.
+`.claude/skills/` is the whole behaviour — markdown instructions, not code.
 
-## 쓰는 법
+## Using it
 
-**사이트에서** — 우상단 `🛠 경험 기록` → 원하는 요청 선택 → 이슈 작성. 몇 분 뒤 사이트에 반영됩니다.
+**From the site** — top-right `🛠 Capture` → pick a request → file the issue. It shows up on the site a few minutes later.
 
-**로컬 Claude Code에서** — 저장소를 열고 그냥 말하면 됩니다.
+**From Claude Code locally** — open the repository and just say it.
 
 ```
-방금 argocd 깐 거 기록해줘
-오늘의 주제 하나 만들어줘
-주간 회고
+write up the argocd install i just did
+give me a topic of the day
+weekly review
 ```
 
-**Obsidian에서** — 이 폴더를 vault로 열면 `[[링크]]`가 그대로 동작합니다.
+**From Obsidian** — open this folder as a vault and the `[[links]]` work as-is.
 
-## 로컬 미리보기
+## Local preview
 
 ```bash
 npm install
@@ -92,16 +92,16 @@ node scripts/build.mjs
 npx serve dist
 ```
 
-## 설정
+## Setup
 
-처음 한 번은 [SETUP.md](SETUP.md)를 따라야 합니다 — OAuth 토큰 발급, Pages 활성화, 커스텀 도메인.
+One-time setup lives in [SETUP.md](SETUP.md) — OAuth token, Pages, custom domain.
 
-## 정직하게
+## Being honest about it
 
-에이전트가 만든 실습 자료는 **검증된 절차가 아닙니다.** 공식 문서를 읽고 합성한 것이라 `05-daily/`에만 머물고, `verified`가 비어 있습니다. 사람이 직접 돌려 보고 `01-install/`이나 `02-runbook/`으로 승격시키기 전까지는 그 구분이 유지됩니다. 이 경계가 무너지면 이 저장소는 그냥 또 하나의 미검증 위키가 됩니다.
+Material the agent produced is **not a verified procedure.** It was synthesized from official documentation, so it stays in `05-daily/` with `verified` empty. That separation holds until a human runs it and promotes it into `01-install/` or `02-runbook/`. Break that boundary and this becomes just another unverified wiki.
 
-발행·트리거 계층의 구조는 [jeonck/secbrain](https://github.com/jeonck/secbrain)에서 가져와 핸즈온 문서에 맞게 고쳤습니다.
+The publishing and trigger layers are adapted from [jeonck/secbrain](https://github.com/jeonck/secbrain), reworked for hands-on documentation.
 
-## 라이선스
+## License
 
-MIT (프레임워크). 문서 내용은 저자 소유.
+MIT for the framework. Document contents belong to their author.

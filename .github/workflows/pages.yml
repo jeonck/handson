@@ -8,17 +8,17 @@ on:
       - "SETUP.md"
       - ".github/ISSUE_TEMPLATE/**"
   workflow_dispatch:
-  # 에이전트 워크플로가 커밋 후 직접 호출합니다.
-  # GITHUB_TOKEN으로 만든 push는 다른 워크플로를 트리거하지 못하므로(재귀 방지),
-  # 재사용 워크플로로 노출해 두고 호출하는 쪽에서 배포를 이어갑니다.
+  # The agent workflows call this directly after committing.
+  # A push made with GITHUB_TOKEN cannot trigger another workflow (recursion guard),
+  # so this is exposed as a reusable workflow and the caller continues the deploy.
   workflow_call:
     inputs:
       ref:
-        description: 빌드할 ref. 에이전트 워크플로는 자기가 방금 푸시한 커밋을 받기 위해 main을 넘깁니다.
+        description: Ref to build. The agent workflows pass main so they pick up the commit they just pushed.
         type: string
         default: main
 
-# 동시 배포 방지. 진행 중인 배포는 끝내고, 대기 중인 것만 교체.
+# No concurrent deploys. Let a running one finish; only replace what is queued.
 concurrency:
   group: pages
   cancel-in-progress: false
@@ -32,8 +32,8 @@ jobs:
   build:
     runs-on: ubuntu-latest
     steps:
-      # workflow_call로 불릴 때 기본 ref는 "호출한 워크플로를 트리거한 SHA" 입니다.
-      # 에이전트가 그 뒤에 커밋을 얹으므로, 그대로 두면 한 커밋 뒤처진 사이트가 배포됩니다.
+      # On workflow_call the default ref is the SHA that triggered the calling workflow.
+      # The agent commits after that, so leaving it would deploy a site one commit behind.
       - uses: actions/checkout@v4
         with:
           ref: ${{ inputs.ref || github.ref }}
@@ -45,11 +45,11 @@ jobs:
 
       - run: npm ci
 
-      - name: 저장소의 마크다운으로 사이트 빌드
+      - name: Build the site from the repository markdown
         run: node scripts/build.mjs
 
-      # site/CNAME 이 dist/ 로 복사되어 커스텀 도메인(handson.metacog.co.kr)을 유지합니다.
-      - name: 커스텀 도메인 파일 확인
+      # site/CNAME is copied into dist/ so the custom domain (handson.metacog.co.kr) survives.
+      - name: Check the custom domain file
         run: test -f dist/CNAME && cat dist/CNAME
 
       - uses: actions/configure-pages@v5

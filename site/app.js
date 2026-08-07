@@ -1,4 +1,4 @@
-/* handson — 정적 SPA. 빌드가 만든 data/*.json 만 읽습니다. 런타임에 LLM을 부르지 않습니다. */
+/* handson — static SPA. Reads only the data/*.json the build produced. No LLM is called at runtime. */
 
 const $ = (s, r = document) => r.querySelector(s);
 const $$ = (s, r = document) => [...r.querySelectorAll(s)];
@@ -22,7 +22,7 @@ $("#theme-toggle").addEventListener("click", () => {
   const next = cur === "auto" ? "light" : cur === "light" ? "dark" : "auto";
   localStorage.setItem("handson-theme", next);
   applyTheme(next);
-  if (location.hash.startsWith("#/graph")) render(); // 캔버스는 CSS 변수를 따라가지 않으므로 다시 그린다
+  if (location.hash.startsWith("#/graph")) render(); // canvas does not follow CSS variables, so redraw
 });
 
 /* ---------- helpers ---------- */
@@ -33,6 +33,7 @@ const domainLabel = (d) => {
   const f = Object.values(DB.config.folders).find((f) => f.domain === d);
   return f ? f.label : d;
 };
+const plural = (n, one, many) => `${n} ${n === 1 ? one : many}`;
 
 function dueClass(due) {
   if (!due) return "";
@@ -42,23 +43,24 @@ function dueClass(due) {
 function dueLabel(due) {
   if (!due) return "";
   const n = dayDiff(due);
-  if (n < 0) return `${due} · ${-n}일 지남`;
-  if (n === 0) return `${due} · 오늘`;
-  if (n <= 7) return `${due} · ${n}일 남음`;
+  if (n < 0) return `${due} · ${plural(-n, "day", "days")} overdue`;
+  if (n === 0) return `${due} · today`;
+  if (n <= 7) return `${due} · in ${plural(n, "day", "days")}`;
   return due;
 }
 
-// 절차 문서의 수명 표시. 검증일이 없는 문서는 "미검증" — 오래된 것보다 먼저 봐야 한다.
+// Shelf life of a procedure. A doc with no verification record is worse than an old one —
+// at least the old one was true once.
 function verifiedBadge(v) {
   const stale = DB.stats.staleDays;
-  if (!v) return `<span class="verified none" title="한 번도 검증 기록이 없습니다">미검증</span>`;
+  if (!v) return `<span class="verified none" title="Never recorded as verified">unverified</span>`;
   const age = -dayDiff(v);
   const cls = age > stale ? "stale" : "";
-  const label = age <= 0 ? "오늘 검증" : `${age}일 전 검증`;
-  return `<span class="verified ${cls}" title="마지막 검증 ${v}">✓ ${label}</span>`;
+  const label = age <= 0 ? "verified today" : `verified ${plural(age, "day", "days")} ago`;
+  return `<span class="verified ${cls}" title="Last verified ${v}">✓ ${label}</span>`;
 }
 
-const RISK_LABEL = { low: "위험 낮음", medium: "위험 보통", high: "위험 높음" };
+const RISK_LABEL = { low: "low risk", medium: "medium risk", high: "high risk" };
 
 const ghBase = () => `https://github.com/${DB.config.owner}/${DB.config.repo}`;
 const issueUrl = (template, title) =>
@@ -77,7 +79,7 @@ function noteCard(n) {
     ${n.summary ? `<p>${esc(n.summary)}</p>` : ""}
     <span class="card-foot">
       ${n.stack.slice(0, 4).map((t) => `<span class="pill stack">${esc(t)}</span>`).join("")}
-      ${n.commands ? `<span class="pill">명령 ${n.commands}</span>` : ""}
+      ${n.commands ? `<span class="pill">${n.commands} cmd</span>` : ""}
       ${PROCEDURAL.includes(n.domain) ? verifiedBadge(n.verified) : ""}
     </span>
   </a>`;
@@ -89,7 +91,7 @@ function taskRow(t) {
     <span class="body">
       <span>${esc(t.text)}</span>
       <span class="meta">
-        ${t.due ? `<span class="due ${dueClass(t.due)}">📅 ${dueLabel(t.due)}</span>` : `<span>기한 없음</span>`}
+        ${t.due ? `<span class="due ${dueClass(t.due)}">📅 ${dueLabel(t.due)}</span>` : `<span>no due date</span>`}
         <span>${esc(t.noteTitle)}</span>
       </span>
     </span>
@@ -119,7 +121,7 @@ function viewDashboard() {
   const heat = s.activity
     .map((a) => {
       const lvl = a.count === 0 ? 0 : a.count >= maxDay * 0.66 ? 3 : a.count >= maxDay * 0.33 ? 2 : 1;
-      return `<i data-c="${lvl}" title="${a.date} · 문서 ${a.count}건"></i>`;
+      return `<i data-c="${lvl}" title="${a.date} · ${plural(a.count, "doc", "docs")}"></i>`;
     })
     .join("");
 
@@ -129,7 +131,7 @@ function viewDashboard() {
         <span class="domain ${domainClass(f.domain)}">${esc(domainLabel(f.domain))}</span>
         <span class="t">${esc(f.title)}</span>
         <span class="age ${f.ageDays === null ? "verified none" : "verified stale"}">${
-          f.ageDays === null ? "미검증" : `${f.ageDays}일 전`
+          f.ageDays === null ? "unverified" : `${f.ageDays}d ago`
         }</span>
       </a>`
     )
@@ -139,45 +141,45 @@ function viewDashboard() {
 
   return `
   <div class="page-head">
-    <h1>대시보드</h1>
+    <h1>Dashboard</h1>
     <p>${esc(DB.config.tagline)}</p>
   </div>
 
   <div class="stats">
-    <div class="stat accent"><div class="n">${s.notes}</div><div class="l">문서</div><div class="sub">${s.words.toLocaleString()} 단어</div></div>
-    <div class="stat"><div class="n">${s.commands}</div><div class="l">기록된 명령</div><div class="sub">따라 할 수 있는 줄 수</div></div>
-    <div class="stat ${s.stale ? "alert" : ""}"><div class="n">${s.stale}</div><div class="l">재검증 필요</div><div class="sub">절차 문서 ${s.procedural}건 중</div></div>
-    <div class="stat"><div class="n">${s.tasksOpen}</div><div class="l">열린 후속 조치</div><div class="sub">검증 항목 ${s.checklistItems}개는 별도</div></div>
-    <div class="stat"><div class="n">${s.stacks}</div><div class="l">다룬 스택</div><div class="sub">태그 ${s.tags}개</div></div>
+    <div class="stat accent"><div class="n">${s.notes}</div><div class="l">docs</div><div class="sub">${s.words.toLocaleString()} words</div></div>
+    <div class="stat"><div class="n">${s.commands}</div><div class="l">commands recorded</div><div class="sub">lines you can actually run</div></div>
+    <div class="stat ${s.stale ? "alert" : ""}"><div class="n">${s.stale}</div><div class="l">need re-verification</div><div class="sub">of ${s.procedural} procedures</div></div>
+    <div class="stat"><div class="n">${s.tasksOpen}</div><div class="l">open follow-ups</div><div class="sub">${s.checklistItems} checklist items counted apart</div></div>
+    <div class="stat"><div class="n">${s.stacks}</div><div class="l">stacks covered</div><div class="sub">${s.tags} tags</div></div>
   </div>
 
   <div class="two-col" style="margin-top:12px">
     <div class="panel">
-      <div class="section-head" style="margin:0 0 12px"><h2>재검증이 필요한 절차</h2><span class="hint">${s.staleDays}일 기준</span></div>
+      <div class="section-head" style="margin:0 0 12px"><h2>Procedures to re-verify</h2><span class="hint">older than ${s.staleDays} days</span></div>
       ${
         staleRows
           ? `<div class="freshlist">${staleRows}</div>
-             <p class="capture-note">절차서는 틀린 채 남아 있는 편이 없는 것보다 위험합니다. 다시 돌려 본 날짜를 <code>verified</code>에 적어 두세요.</p>`
-          : `<p class="empty-state" style="padding:24px">모든 절차 문서가 최근 ${s.staleDays}일 안에 검증되었습니다.</p>`
+             <p class="capture-note">A procedure that is wrong is more dangerous than one that does not exist. Put the day you last ran it in <code>verified</code>.</p>`
+          : `<p class="empty-state" style="padding:24px">Every procedure has been verified within the last ${s.staleDays} days.</p>`
       }
     </div>
     <div class="panel">
-      <div class="section-head" style="margin:0 0 12px"><h2>카테고리</h2></div>
+      <div class="section-head" style="margin:0 0 12px"><h2>Categories</h2></div>
       <div class="folders">${folderBars}</div>
-      <div class="section-head" style="margin:20px 0 10px"><h2>후속 조치</h2><span class="spacer"></span><a class="more" href="#/tasks">전체</a></div>
-      ${tasks.length ? `<div class="tasklist">${tasks.map(taskRow).join("")}</div>` : `<p class="empty" style="color:var(--ink-3);font-size:12.5px;margin:0">열린 후속 조치가 없습니다.</p>`}
+      <div class="section-head" style="margin:20px 0 10px"><h2>Follow-ups</h2><span class="spacer"></span><a class="more" href="#/tasks">All</a></div>
+      ${tasks.length ? `<div class="tasklist">${tasks.map(taskRow).join("")}</div>` : `<p class="empty" style="color:var(--ink-3);font-size:12.5px;margin:0">No open follow-ups.</p>`}
     </div>
   </div>
 
-  <div class="section-head"><h2>작성 리듬</h2><span class="hint">최근 12주</span></div>
+  <div class="section-head"><h2>Writing rhythm</h2><span class="hint">last 12 weeks</span></div>
   <div class="panel">
     <div class="heat">${heat}</div>
-    <div class="heat-legend">적음 <i data-c="0"></i><i data-c="1"></i><i data-c="2"></i><i data-c="3"></i> 많음</div>
+    <div class="heat-legend">less <i data-c="0"></i><i data-c="1"></i><i data-c="2"></i><i data-c="3"></i> more</div>
   </div>
 
   ${
     topStacks.length
-      ? `<div class="section-head"><h2>스택</h2><span class="spacer"></span><a class="more" href="#/stacks">전체 ${DB.stacks.length}개</a></div>
+      ? `<div class="section-head"><h2>Stacks</h2><span class="spacer"></span><a class="more" href="#/stacks">All ${DB.stacks.length}</a></div>
          <div class="tagcloud">${topStacks
            .map(
              (t) =>
@@ -187,14 +189,14 @@ function viewDashboard() {
       : ""
   }
 
-  <div class="section-head"><h2>최근 문서</h2><span class="spacer"></span><a class="more" href="#/notes">전체 ${s.notes}건</a></div>
+  <div class="section-head"><h2>Recent docs</h2><span class="spacer"></span><a class="more" href="#/notes">All ${s.notes}</a></div>
   ${recent.length ? `<div class="cards">${recent.map(noteCard).join("")}</div>` : emptyVault()}
   `;
 }
 
 function emptyVault() {
   return `<div class="empty-state">
-    아직 문서가 없습니다. <strong>경험 기록</strong> 버튼으로 첫 현장 메모를 던져 보세요.
+    No docs yet. Hit <strong>Capture</strong> and throw in your first field note.
   </div>`;
 }
 
@@ -221,17 +223,17 @@ function viewNotes(params) {
 
   return `
   <div class="page-head">
-    <h1>문서</h1>
-    <p>${list.length}건 표시 중 ${active ? `· <a href="#/notes" style="color:var(--accent)">필터 해제</a>` : `· 전체 ${DB.notes.length}건`}</p>
+    <h1>Docs</h1>
+    <p>Showing ${list.length} ${active ? `· <a href="#/notes" style="color:var(--accent)">clear filters</a>` : `of ${DB.notes.length}`}</p>
   </div>
   <div class="filters">
-    <button class="chip" data-folder="" aria-pressed="${!folder}">전체</button>
+    <button class="chip" data-folder="" aria-pressed="${!folder}">All</button>
     ${chips}
-    <input id="notes-q" type="search" placeholder="이 목록 안에서 검색…" value="${esc(params.get("q") || "")}">
+    <input id="notes-q" type="search" placeholder="Search within this list…" value="${esc(params.get("q") || "")}">
   </div>
   ${stack ? `<div class="filters"><span class="pill stack">${esc(stack)}</span></div>` : ""}
   ${tag ? `<div class="filters"><span class="pill">#${esc(tag)}</span></div>` : ""}
-  ${list.length ? `<div class="cards">${list.map(noteCard).join("")}</div>` : `<div class="empty-state">조건에 맞는 문서가 없습니다.</div>`}
+  ${list.length ? `<div class="cards">${list.map(noteCard).join("")}</div>` : `<div class="empty-state">No docs match these filters.</div>`}
   `;
 }
 
@@ -244,20 +246,20 @@ function viewTasks() {
 
   const group = (title, hint, items) =>
     items.length
-      ? `<div class="section-head"><h2>${title}</h2><span class="hint">${items.length}건 ${hint}</span></div>
+      ? `<div class="section-head"><h2>${title}</h2><span class="hint">${items.length} ${hint}</span></div>
          <div class="tasklist">${items.map(taskRow).join("")}</div>`
       : "";
 
   return `
   <div class="page-head">
-    <h1>후속 조치</h1>
-    <p>문서 본문의 <code>- [ ] … 📅 YYYY-MM-DD</code> 를 모은 것입니다. 체크는 문서를 직접 고쳐야 합니다.</p>
+    <h1>Follow-ups</h1>
+    <p>Collected from <code>- [ ] … 📅 YYYY-MM-DD</code> lines under a follow-up heading. Checking one off means editing the doc.</p>
   </div>
-  ${open.length ? "" : `<div class="empty-state">열린 후속 조치가 없습니다.</div>`}
-  ${group("지난 기한", "· 다시 볼 것", overdue)}
-  ${group("7일 안", "", soon)}
-  ${group("그 이후", "", later)}
-  ${group("기한 없음", "· 날짜를 정하지 않은 것", undated)}
+  ${open.length ? "" : `<div class="empty-state">No open follow-ups.</div>`}
+  ${group("Overdue", "· look again", overdue)}
+  ${group("Within 7 days", "", soon)}
+  ${group("Later", "", later)}
+  ${group("No due date", "· never got a date", undated)}
   `;
 }
 
@@ -265,7 +267,7 @@ function viewStacks() {
   const maxS = Math.max(1, ...DB.stacks.map((t) => t.count));
   const maxT = Math.max(1, ...DB.tags.map((t) => t.count));
   return `
-  <div class="page-head"><h1>스택</h1><p>이 저장소가 실제로 다뤄 본 도구 ${DB.stacks.length}개. 클릭하면 해당 문서만 봅니다.</p></div>
+  <div class="page-head"><h1>Stacks</h1><p>${DB.stacks.length} tools this repository has actually touched. Click one to filter.</p></div>
   ${
     DB.stacks.length
       ? `<div class="tagcloud">
@@ -277,10 +279,10 @@ function viewStacks() {
       )
       .join("")}
   </div>`
-      : `<div class="empty-state">아직 <code>stack:</code> 이 선언된 문서가 없습니다.</div>`
+      : `<div class="empty-state">No doc declares a <code>stack:</code> yet.</div>`
   }
 
-  <div class="section-head"><h2>태그</h2><span class="hint">${DB.tags.length}개 · 주제 축</span></div>
+  <div class="section-head"><h2>Tags</h2><span class="hint">${DB.tags.length} · topic axis</span></div>
   <div class="tagcloud">
     ${DB.tags
       .map(
@@ -292,7 +294,7 @@ function viewStacks() {
   </div>
   ${
     DB.stats.missingLinks.length
-      ? `<div class="section-head"><h2>아직 없는 문서</h2><span class="hint">링크는 걸렸지만 파일이 없는 것 — 다음에 쓸 거리</span></div>
+      ? `<div class="section-head"><h2>Docs that do not exist yet</h2><span class="hint">linked to, but no file — the writing queue</span></div>
          <div class="tagcloud">${DB.stats.missingLinks.map((m) => `<span class="pill">${esc(m)}</span>`).join("")}</div>`
       : ""
   }
@@ -301,10 +303,10 @@ function viewStacks() {
 
 function viewGraph() {
   return `
-  <div class="page-head"><h1>그래프</h1><p>문서 ${DB.notes.length}건 · 링크 ${DB.edges.length}개. 드래그로 이동, 휠로 확대, 노드 클릭으로 열기.</p></div>
+  <div class="page-head"><h1>Graph</h1><p>${DB.notes.length} docs · ${DB.edges.length} links. Drag to move, wheel to zoom, click a node to open.</p></div>
   <div class="graph-wrap">
     <canvas id="graph"></canvas>
-    <div class="graph-hint">연결이 없는 문서는 회색입니다</div>
+    <div class="graph-hint">Unlinked docs are grey</div>
     <div class="graph-legend">
       ${Object.values(DB.config.folders)
         .map((m) => `<span><i style="background:var(--d-${m.domain})"></i>${esc(m.label)}</span>`)
@@ -317,7 +319,7 @@ async function viewNote(slug) {
   let n = noteCache.get(slug);
   if (!n) {
     const res = await fetch(`data/notes/${encodeURIComponent(slug)}.json`, { cache: "no-cache" });
-    if (!res.ok) return `<div class="empty-state">문서를 찾을 수 없습니다: ${esc(slug)}</div>`;
+    if (!res.ok) return `<div class="empty-state">Doc not found: ${esc(slug)}</div>`;
     n = await res.json();
     noteCache.set(slug, n);
   }
@@ -330,14 +332,14 @@ async function viewNote(slug) {
       : `<p class="empty">${empty}</p>`;
 
   const envCells = [
-    n.env && { k: "검증 환경", v: n.env },
-    n.verified && { k: "마지막 검증", v: n.verified },
-    n.duration && { k: "예상 소요", v: n.duration },
-    n.risk && { k: "위험도", v: RISK_LABEL[n.risk] || n.risk },
+    n.env && { k: "Verified on", v: n.env },
+    n.verified && { k: "Last verified", v: n.verified },
+    n.duration && { k: "Takes about", v: n.duration },
+    n.risk && { k: "Risk", v: RISK_LABEL[n.risk] || n.risk },
   ].filter(Boolean);
 
   return `
-  <a class="back-link" href="#/notes">← 문서 목록</a>
+  <a class="back-link" href="#/notes">← All docs</a>
   <div class="reader">
     <article>
       <header class="note-head">
@@ -345,9 +347,9 @@ async function viewNote(slug) {
         <h1>${esc(n.title)}</h1>
         ${n.summary ? `<p class="note-sum">${esc(n.summary)}</p>` : ""}
         <div class="note-meta">
-          <span class="pill">작성 ${n.date}</span>
+          <span class="pill">written ${n.date}</span>
           ${PROCEDURAL.includes(n.domain) ? verifiedBadge(n.verified) : ""}
-          ${n.commands ? `<span class="pill">명령 ${n.commands}줄</span>` : ""}
+          ${n.commands ? `<span class="pill">${plural(n.commands, "command", "commands")}</span>` : ""}
           ${n.stack.map((t) => `<a class="pill stack" href="#/notes?stack=${encodeURIComponent(t)}">${esc(t)}</a>`).join("")}
           ${n.tags.map((t) => `<a class="pill tag" href="#/notes?tag=${encodeURIComponent(t)}">#${esc(t)}</a>`).join("")}
         </div>
@@ -363,22 +365,22 @@ async function viewNote(slug) {
     </article>
     <aside class="aside">
       <div id="toc-wrap" hidden>
-        <h4>목차</h4>
+        <h4>Contents</h4>
         <ul class="toc" id="toc"></ul>
       </div>
       <div>
-        <h4>백링크 ${n.backlinks.length}</h4>
-        ${linkList(n.backlinks, "이 문서를 가리키는 문서가 아직 없습니다.")}
+        <h4>Backlinks ${n.backlinks.length}</h4>
+        ${linkList(n.backlinks, "Nothing points here yet.")}
       </div>
       <div>
-        <h4>바깥 링크 ${n.links.length}</h4>
-        ${linkList(n.links, "이 문서에서 나가는 링크가 없습니다.")}
+        <h4>Outgoing ${n.links.length}</h4>
+        ${linkList(n.links, "This doc links nowhere.")}
       </div>
       <div>
-        <h4>원본</h4>
+        <h4>Source</h4>
         <ul>
-          <li><a href="${esc(editUrl)}" target="_blank" rel="noopener">GitHub에서 편집 ↗</a></li>
-          <li><a href="${esc(histUrl)}" target="_blank" rel="noopener">변경 이력 ↗</a></li>
+          <li><a href="${esc(editUrl)}" target="_blank" rel="noopener">Edit on GitHub ↗</a></li>
+          <li><a href="${esc(histUrl)}" target="_blank" rel="noopener">History ↗</a></li>
         </ul>
         <p class="empty" style="margin-top:8px"><code>${esc(n.path)}</code></p>
       </div>
@@ -386,7 +388,7 @@ async function viewNote(slug) {
   </div>`;
 }
 
-// 절차 문서는 길어서 목차 없이는 못 씁니다. 헤딩 id는 빌드가 붙여 둡니다.
+// Procedures get long, and a wall of steps without a map is unusable. Heading ids come from the build.
 function buildToc() {
   const wrap = $("#toc-wrap");
   const toc = $("#toc");
@@ -400,15 +402,21 @@ function buildToc() {
   }
 }
 
-// 해시 라우터가 문서 내 앵커(#a-종료-코드-0)를 경로로 오인하지 않도록 스크롤로 가로챕니다.
-// 라우트 링크(#/...)와 외부 링크는 그대로 둡니다. 위임이라 한 번만 붙입니다.
+const TOPBAR_OFFSET = 72;
+
+// Keep the hash router from mistaking an in-document anchor (#c-exit-code-137) for a route.
+// Route links (#/...) and external links pass through. Delegated, so it is attached once.
 $("#main").addEventListener("click", (e) => {
   const a = e.target.closest('a[href^="#"]');
   if (!a || a.getAttribute("href").startsWith("#/")) return;
   const target = document.getElementById(decodeURIComponent(a.getAttribute("href").slice(1)));
   if (!target) return;
   e.preventDefault();
-  target.scrollIntoView({ behavior: "smooth", block: "start" });
+  // Scroll explicitly rather than via scrollIntoView: smooth scrolling is a no-op in some
+  // Chrome builds when triggered from a click handler, which left these links dead, and the
+  // sticky topbar would hide the heading anyway. TOPBAR_OFFSET keeps the target visible.
+  const top = window.scrollY + target.getBoundingClientRect().top - TOPBAR_OFFSET;
+  window.scrollTo(0, Math.max(0, top));
 });
 
 /* ---------- router ---------- */
@@ -494,7 +502,8 @@ function initGraph() {
     degree.set(e.to, (degree.get(e.to) || 0) + 1);
   }
 
-  // 결정론적 초기 배치 — 새로고침마다 그래프가 튀지 않도록 난수 대신 인덱스 기반 원형 배치.
+  // Deterministic initial layout — index-based ring instead of random, so the graph
+  // does not jump around on every refresh.
   const nodes = DB.notes.map((n, i) => {
     const a = (i / Math.max(1, DB.notes.length)) * Math.PI * 2;
     const r = 120 + ((i * 37) % 90);
@@ -527,7 +536,7 @@ function initGraph() {
   const radius = (n) => 4.5 + Math.min(9, n.deg * 1.5);
 
   function step() {
-    // 반발 (O(n²) — 개인 저장소 규모에서 충분)
+    // Repulsion (O(n²) — fine at the size of one engineer's repository)
     for (let i = 0; i < nodes.length; i++) {
       for (let j = i + 1; j < nodes.length; j++) {
         const a = nodes[i], b = nodes[j];
@@ -541,7 +550,7 @@ function initGraph() {
         b.vx += (dx / d) * f; b.vy += (dy / d) * f;
       }
     }
-    // 링크 인력
+    // Link attraction
     for (const l of links) {
       const a = nodes[l.s], b = nodes[l.t];
       const dx = b.x - a.x, dy = b.y - a.y;
@@ -550,7 +559,7 @@ function initGraph() {
       a.vx += (dx / d) * f; a.vy += (dy / d) * f;
       b.vx -= (dx / d) * f; b.vy -= (dy / d) * f;
     }
-    // 중심 인력 + 감쇠
+    // Pull to center + damping
     for (const n of nodes) {
       if (n === dragNode) { n.vx = n.vy = 0; continue; }
       n.vx -= n.x * 0.004; n.vy -= n.y * 0.004;
@@ -664,7 +673,7 @@ function initGraph() {
     graphRaf = requestAnimationFrame(loop);
   })();
 
-  // 뷰를 떠나면 시뮬레이션 정지
+  // Stop the simulation once the view is gone
   const stop = () => {
     if (!document.getElementById("graph")) {
       cancelAnimationFrame(graphRaf);
@@ -731,7 +740,7 @@ function runSearch(raw) {
       </a></li>`
         )
         .join("")
-    : `<li class="palette-empty">"${esc(raw)}" 에 맞는 문서가 없습니다.</li>`;
+    : `<li class="palette-empty">Nothing matches "${esc(raw)}".</li>`;
 }
 
 function moveSel(d) {
@@ -762,10 +771,10 @@ $("#search-open").addEventListener("click", openPalette);
 const capture = $("#capture");
 
 const REQUESTS = [
-  { ico: "🛠", t: "경험 기록", d: "방금 끝낸 설치·작업·장애 대응을 그대로 던지면 카테고리별 문서로 만듭니다.", tpl: "handson.yml", title: "핸즈온 기록" },
-  { ico: "📅", t: "오늘의 주제", d: "기록이 없는 날 자동으로 도는 것과 같은 작업 — 최신 DevOps 주제 하나를 골라 실습 자료를 만듭니다.", tpl: "daily-topic.yml", title: "오늘의 주제 요청" },
-  { ico: "🔁", t: "주간 회고", d: "지난 7일 문서를 훑어 반복된 장애와 빠진 절차를 짚습니다.", tpl: "weekly-review.yml", title: "주간 회고 요청" },
-  { ico: "📐", t: "절차 표준화", d: "같은 작업이 여러 문서에 흩어져 있으면 하나의 표준 절차서로 승격시킵니다.", tpl: "standardize.yml", title: "절차 표준화 요청" },
+  { ico: "🛠", t: "Capture field notes", d: "Throw in the install, task, or incident you just finished — it gets sorted into the right category.", tpl: "handson.yml", title: "Field notes" },
+  { ico: "📅", t: "Topic of the day", d: "The same job that runs on days with no notes — picks one current DevOps topic and builds a hands-on lab.", tpl: "daily-topic.yml", title: "Topic of the day" },
+  { ico: "🔁", t: "Weekly review", d: "Reads the last 7 days across docs and names the repeats and the missing procedures.", tpl: "weekly-review.yml", title: "Weekly review" },
+  { ico: "📐", t: "Standardize", d: "When the same work is scattered across docs, promotes it into one standard runbook.", tpl: "standardize.yml", title: "Standardize a procedure" },
 ];
 
 function openCapture() {
@@ -794,12 +803,12 @@ document.addEventListener("keydown", (e) => {
 
 (async function boot() {
   try {
-    // no-cache = 조건부 GET. 에이전트가 방금 커밋한 문서가 Pages 캐시 때문에
-    // 몇 분간 안 보이는 것을 막습니다 (변경 없으면 304라 비용은 거의 없습니다).
+    // no-cache = conditional GET. Keeps a doc the agent just committed from staying invisible
+    // for minutes behind the Pages cache (304 when unchanged, so it costs almost nothing).
     DB = await (await fetch("data/index.json", { cache: "no-cache" })).json();
   } catch {
     $("#main").innerHTML = `<div class="empty-state">
-      데이터를 불러오지 못했습니다. <code>node scripts/build.mjs</code> 로 <code>dist/</code>를 만든 뒤 그 폴더를 서빙해야 합니다.
+      Could not load the data. Run <code>node scripts/build.mjs</code> to produce <code>dist/</code> and serve that folder.
     </div>`;
     return;
   }
@@ -808,7 +817,7 @@ document.addEventListener("keydown", (e) => {
   $("#brand-title").textContent = DB.config.title;
   $("#brand-tagline").textContent = DB.config.tagline;
   $("#repo-link").href = ghBase();
-  $("#build-stamp").textContent = `빌드 ${DB.generatedAt.slice(0, 16).replace("T", " ")} UTC`;
+  $("#build-stamp").textContent = `built ${DB.generatedAt.slice(0, 16).replace("T", " ")} UTC`;
 
   window.addEventListener("hashchange", render);
   await render();

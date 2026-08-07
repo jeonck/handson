@@ -1,25 +1,25 @@
-name: 📐 절차 표준화
-description: 여러 문서에 흩어진 같은 작업을 하나의 표준 절차서로 승격시킵니다.
-title: "절차 표준화 요청"
+name: 📐 Standardize a procedure
+description: Promote the same work scattered across documents into one standard runbook.
+title: "Standardize a procedure"
 labels: ["standardize"]
 body:
   - type: markdown
     attributes:
       value: |
-        기존 문서만 입력으로 씁니다. 새로운 사실을 만들지 않습니다.
-        합성된 절차서의 `verified`는 **비어 있는 채로** 나옵니다 — 실제로 한 번 돌려 본 뒤 직접 채우세요.
+        Existing documents are the only input. No new facts get invented.
+        The synthesized runbook comes out with `verified` **empty** — run it for real once, then fill it in yourself.
 
   - type: input
     id: target
     attributes:
-      label: 표준화할 작업 (선택)
-      description: 비워 두면 반복 빈도가 가장 높은 것을 에이전트가 고릅니다.
-      placeholder: 노드 교체 관련 기록들
+      label: Work to standardize (optional)
+      description: Leave it empty and the agent picks whatever recurred most.
+      placeholder: the node replacement records
 
   - type: checkboxes
     id: ack
     attributes:
-      label: 확인
+      label: Acknowledge
       options:
-        - label: 합성된 절차서는 검증 전까지 실제 작업에 쓰지 않겠습니다.
+        - label: I will not use a synthesized runbook on real work until it has been verified.
           required: true

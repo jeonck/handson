@@ -1,87 +1,87 @@
 ---
-title: 프로덕션 노드 드레인 및 교체 절차
+title: Draining and replacing a production node
 date: 2026-08-07
 domain: runbook
 tags: [maintenance, capacity, kubernetes]
 stack: [kubernetes, kubectl, aws-eks, terraform]
-summary: 운영 중인 워커 노드를 무중단으로 비우고 새 노드로 교체하는 절차. PDB 사전 점검과 중단 기준(abort criteria)이 절차의 절반입니다.
+summary: Empty a live worker node and swap in a new one without downtime. The PDB pre-check and the abort criteria are half the procedure.
 source: handson
 env: Kubernetes 1.31 (EKS) · Managed Node Group · kubectl 1.31
 verified: 2026-08-07
-duration: 노드당 20~40분
+duration: 20–40 min per node
 risk: high
 ---
 
-커널 패치, 인스턴스 타입 변경, AMI 갱신, 좀비 노드 정리에 공통으로 쓰는 절차입니다. **한 번에 노드 하나**가 원칙입니다. 두 개를 동시에 비우다 PDB가 걸려 드레인이 반쯤 멈춘 채로 남는 상황이 가장 수습하기 어렵습니다.
+The same procedure covers kernel patching, instance type changes, AMI refreshes, and clearing out a zombie node. **One node at a time**, always. Two half-drained nodes stuck behind a PDB is the hardest state to recover from.
 
-> 이 절차는 되돌릴 수 있는 지점이 3단계까지입니다. 4단계(노드 삭제) 이후는 새 노드를 기다리는 것 말고 방법이 없습니다.
+> This procedure is reversible up to step 3. After step 4 (node deletion) the only move left is waiting for the replacement.
 
-## 사전 점검 (작업 시작 전, 별도 시간에)
+## Pre-checks (before the maintenance window, not during)
 
-### 1. 여유 용량 확인
+### 1. Spare capacity
 
-노드 하나를 빼도 나머지가 그 부하를 받을 수 있는지 봅니다.
+Confirm the remaining nodes can absorb this one's load.
 
 ```bash
 kubectl top nodes
 kubectl describe node <NODE> | grep -A5 "Allocated resources"
 ```
 
-남은 노드의 CPU/메모리 request 합이 90%를 넘길 것 같으면 **먼저 노드를 늘리고** 시작합니다. 드레인 도중에 스케일아웃을 기다리는 것은 장애입니다.
+If the CPU/memory requests on the surviving nodes would land above 90%, **add capacity first**. Waiting on a scale-out mid-drain is an incident, not a maintenance step.
 
-### 2. PodDisruptionBudget 점검 — 가장 중요한 단계
+### 2. PodDisruptionBudgets — the step that matters most
 
 ```bash
 kubectl get pdb -A
 ```
 
-`ALLOWED DISRUPTIONS`가 `0`인 PDB가 있으면 드레인은 그 Pod에서 무한정 멈춥니다.
+Any PDB showing `ALLOWED DISRUPTIONS` of `0` will stall the drain on that pod indefinitely.
 
 ```bash
-# 이 노드 위의 Pod 중 PDB에 걸려 있는 것 찾기
+# which pods on this node are covered by a PDB
 kubectl get pods --field-selector spec.nodeName=<NODE> -A \
   -o custom-columns='NS:.metadata.namespace,POD:.metadata.name,OWNER:.metadata.ownerReferences[0].kind'
 ```
 
-`ALLOWED DISRUPTIONS = 0`의 흔한 원인:
+Common causes of `ALLOWED DISRUPTIONS = 0`:
 
-| 원인 | 확인 | 조치 |
+| Cause | Check | Action |
 |---|---|---|
-| replicas=1인데 `minAvailable: 1` | `kubectl get deploy <NAME>` | 작업 전 임시로 replicas를 2로 |
-| Pod가 이미 하나 Unhealthy | `kubectl get pods -l <SELECTOR>` | 그 Pod를 먼저 고침 |
-| StatefulSet 단일 인스턴스 | `kubectl get sts` | 애플리케이션 팀과 중단 시간 합의 |
+| replicas=1 with `minAvailable: 1` | `kubectl get deploy <NAME>` | temporarily scale to 2 for the window |
+| one pod already unhealthy | `kubectl get pods -l <SELECTOR>` | fix that pod first |
+| single-instance StatefulSet | `kubectl get sts` | agree a downtime window with the owning team |
 
-### 3. 이 노드에만 있는 것 찾기
+### 3. What only exists on this node
 
 ```bash
-# emptyDir·hostPath를 쓰는 Pod — 드레인하면 데이터가 사라집니다
+# pods using emptyDir or hostPath — draining destroys that data
 kubectl get pods --field-selector spec.nodeName=<NODE> -A -o json | \
   jq -r '.items[] | select(.spec.volumes[]?|has("emptyDir") or has("hostPath")) |
          "\(.metadata.namespace)/\(.metadata.name)"'
 ```
 
-여기 나온 Pod는 소유 팀에 먼저 알립니다. `--delete-emptydir-data` 없이는 드레인이 거부되고, 붙이면 데이터가 날아갑니다. 둘 중 하나를 몰래 고르면 안 됩니다.
+Tell the owning teams about anything listed here. Without `--delete-emptydir-data` the drain refuses; with it the data is gone. Picking one of those quietly is not an option.
 
-### 4. 커뮤니케이션
+### 4. Communication
 
-- 변경 티켓 번호 확보
-- 담당 채널에 시작/종료 공지 (예상 소요와 롤백 조건 포함)
-- 진행 중 알람 억제(silence)는 **이 노드 관련 알람만**, 만료 시간 필수
+- Change ticket number in hand
+- Start and end announced in the owning channel, with expected duration and rollback conditions
+- Silence alerts **for this node only**, always with an expiry
 
-## 실행
+## Execution
 
-### 1단계 — cordon (되돌릴 수 있음)
+### Step 1 — cordon (reversible)
 
-새 Pod가 이 노드로 스케줄되지 않게 막습니다. 기존 Pod는 그대로 돕니다.
+Stops new pods scheduling here. Everything already running keeps running.
 
 ```bash
 kubectl cordon <NODE>
 kubectl get node <NODE>          # STATUS: Ready,SchedulingDisabled
 ```
 
-롤백: `kubectl uncordon <NODE>`
+Rollback: `kubectl uncordon <NODE>`
 
-### 2단계 — drain (되돌릴 수 있음, 되돌리면 재배치가 일어남)
+### Step 2 — drain (reversible, but reversing causes another reshuffle)
 
 ```bash
 kubectl drain <NODE> \
@@ -92,95 +92,95 @@ kubectl drain <NODE> \
   --skip-wait-for-delete-timeout=60
 ```
 
-각 플래그의 이유:
+Why each flag is there:
 
-- `--ignore-daemonsets` — DaemonSet Pod는 어차피 다른 노드로 옮길 수 없습니다. 없으면 드레인이 즉시 거부됩니다.
-- `--delete-emptydir-data` — 위 사전 점검 3에서 확인·합의한 경우에만 붙입니다.
-- `--grace-period=120` — 애플리케이션의 가장 긴 `terminationGracePeriodSeconds`보다 크게. 짧으면 커넥션이 잘립니다.
-- `--timeout=15m` — 무한 대기를 막습니다. 걸리면 사람이 판단해야 합니다.
+- `--ignore-daemonsets` — DaemonSet pods cannot move anywhere else. Without this the drain refuses immediately.
+- `--delete-emptydir-data` — only after pre-check 3 confirmed and agreed it.
+- `--grace-period=120` — larger than your longest `terminationGracePeriodSeconds`. Too short and connections get cut.
+- `--timeout=15m` — prevents an unbounded wait. If it trips, a human needs to decide.
 
-**드레인이 멈춘 것처럼 보일 때** — 다른 터미널에서 관찰합니다. 로그를 노려보고 있지 말고 원인을 봅니다.
+**When the drain looks stuck**, watch from another terminal. Do not stare at the log — look at the cause.
 
 ```bash
 kubectl get pods --field-selector spec.nodeName=<NODE> -A -w
 kubectl get events -A --sort-by=.lastTimestamp | grep -i evict | tail
 ```
 
-`Cannot evict pod as it would violate the pod's disruption budget` → 사전 점검 2로 돌아갑니다.
+`Cannot evict pod as it would violate the pod's disruption budget` sends you back to pre-check 2.
 
-### 3단계 — 비었는지 확인 (마지막 되돌릴 수 있는 지점)
+### Step 3 — confirm it is empty (last reversible point)
 
 ```bash
 kubectl get pods --field-selector spec.nodeName=<NODE> -A \
   --field-selector status.phase!=Succeeded,status.phase!=Failed
 ```
 
-DaemonSet Pod와 static Pod만 남아 있어야 합니다. 다른 것이 남아 있으면 **다음 단계로 넘어가지 마세요.**
+Only DaemonSet and static pods should remain. If anything else is there, **do not proceed**.
 
-옮겨간 Pod가 실제로 서비스 중인지도 확인합니다. 스케줄만 되고 `Running`이 아닌 경우가 있습니다.
+Also check that the evicted pods are actually serving, not merely scheduled.
 
 ```bash
 kubectl get pods -A -o wide | grep -v Running | grep -v Completed
 ```
 
-이 시점에서 서비스 지표(에러율·p99)를 봅니다. 평소 대비 튀었으면 여기서 멈추고 `uncordon` 후 원인을 찾습니다.
+Look at service metrics here (error rate, p99). If they moved against baseline, stop, `uncordon`, and find out why.
 
-### 4단계 — 노드 제거 (되돌릴 수 없음)
+### Step 4 — remove the node (not reversible)
 
-관리형 노드그룹이면 인스턴스를 종료하고 ASG가 새로 띄우게 둡니다.
+On a managed node group, terminate the instance and let the ASG bring up a replacement.
 
 ```bash
-# EKS 관리형 노드그룹 — 인스턴스 ID 확인
+# EKS managed node group — resolve the instance ID
 INSTANCE_ID=$(kubectl get node <NODE> -o jsonpath='{.spec.providerID}' | awk -F/ '{print $NF}')
 aws ec2 terminate-instances --instance-ids "$INSTANCE_ID"
 ```
 
-IaC로 관리 중이면 콘솔이나 CLI로 직접 지우지 말고 Terraform 쪽에서 처리합니다. 손으로 지운 인스턴스는 다음 `terraform plan`에서 드리프트로 다시 나타납니다.
+If this is managed by IaC, do not delete it from the console or CLI — handle it through Terraform. An instance removed by hand comes back as drift on the next `terraform plan`.
 
 ```bash
 terraform plan -target=module.eks.module.eks_managed_node_group
 ```
 
-### 5단계 — 새 노드 확인
+### Step 5 — verify the replacement
 
 ```bash
-kubectl get nodes -w        # 새 노드가 Ready 되기까지 대기
+kubectl get nodes -w        # wait for the new node to reach Ready
 kubectl get node <NEW_NODE> -o jsonpath='{.status.nodeInfo.kubeletVersion}{"\n"}'
 kubectl get node <NEW_NODE> -o jsonpath='{.metadata.labels}' | jq
 ```
 
-옛 노드 오브젝트가 `NotReady`로 남아 있으면 정리합니다.
+If the old node object lingers as `NotReady`, clean it up.
 
 ```bash
 kubectl delete node <NODE>
 ```
 
-## 중단 기준 (하나라도 해당하면 즉시 멈추고 uncordon)
+## Abort criteria (any one of these — stop and uncordon)
 
-- 드레인 15분 초과, 원인 미파악
-- 옮겨간 Pod가 다른 노드에서 `Pending` — 용량 부족 신호
-- 서비스 에러율이 기준선 대비 눈에 띄게 상승
-- 남은 노드의 메모리 압박(`MemoryPressure`) 발생
-- 새 노드가 10분 안에 `Ready`가 되지 않음
+- Drain past 15 minutes with no identified cause
+- An evicted pod sitting `Pending` on another node — that is a capacity signal
+- Service error rate visibly above baseline
+- `MemoryPressure` on any remaining node
+- Replacement node not `Ready` within 10 minutes
 
-멈춘 뒤에는 원인을 문서로 남깁니다. 같은 이유로 두 번 멈췄다면 그건 절차 문제이지 그날의 운이 아닙니다.
+After aborting, write down why. Aborting twice for the same reason is a problem with the procedure, not with the day.
 
-## 검증 체크리스트
+## Verification checklist
 
-- [ ] 모든 노드 `Ready`, `SchedulingDisabled` 없음
-- [ ] `kubectl get pods -A | grep -v Running | grep -v Completed` 비어 있음
-- [ ] 새 노드의 kubelet 버전·라벨·테인트가 기존과 동일
-- [ ] DaemonSet `DESIRED == READY`
-- [ ] 서비스 대시보드 에러율·p99가 작업 전 수준으로 복귀
-- [ ] 알람 silence 해제
-- [ ] 변경 티켓에 종료 기록
+- [ ] All nodes `Ready`, none `SchedulingDisabled`
+- [ ] `kubectl get pods -A | grep -v Running | grep -v Completed` comes back empty
+- [ ] New node's kubelet version, labels, and taints match the old one
+- [ ] DaemonSets show `DESIRED == READY`
+- [ ] Service dashboard error rate and p99 back to pre-maintenance levels
+- [ ] Alert silence lifted
+- [ ] Change ticket closed with an end record
 
-## 후속 조치
+## Follow-ups
 
-- [ ] replicas를 임시로 올린 워크로드 원복 📅 2026-08-08
-- [ ] `ALLOWED DISRUPTIONS = 0`이었던 서비스 목록을 팀에 전달
+- [ ] Scale back the workloads that were temporarily bumped to 2 replicas 📅 2026-08-08
+- [ ] Hand the teams the list of services that showed `ALLOWED DISRUPTIONS = 0`
 
-## 연결
+## Related
 
-[[pod-crashloopbackoff]] — 새 노드에서 Pod가 뜨자마자 죽을 때.
-[[argocd-helm-ha-install]] — Argo CD 컨트롤러는 replica 1이라 이 절차 중 잠깐 동기화가 멈춥니다. 드레인 직후 `argocd app list`로 복구를 확인하세요.
+[[pod-crashloopbackoff]] — when pods die as soon as they land on the new node.
+[[argocd-helm-ha-install]] — the Argo CD controller runs at 1 replica, so syncing pauses briefly during this procedure. Confirm recovery with `argocd app list` right after the drain.

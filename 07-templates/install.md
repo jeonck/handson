@@ -12,11 +12,11 @@ duration:
 risk: 
 ---
 
-<한 문단: 무엇을 세우는가, 무엇을 가정하는가, 무엇이 이 문서 범위 밖인가.>
+<One paragraph: what you are standing up, what it assumes, what is out of scope.>
 
-## 사전 조건
+## Prerequisites
 
-| 항목 | 확인 명령 | 기대값 |
+| Item | Check | Expected |
 |---|---|---|
 |  |  |  |
 
@@ -30,24 +30,24 @@ risk:
 ```bash
 ```
 
-## 검증 체크리스트
+## Verification checklist
 
 - [ ] 
 - [ ] 
 
-## 롤백
+## Rollback
 
 ```bash
 ```
 
-## 걸린 지점
+## Where this bit us
 
-<실제로 밟은 것만. 안 겪은 것을 추측으로 쓰지 않습니다.>
+<Only what you actually hit. Do not invent traps you did not run into.>
 
-## 후속 조치
+## Follow-ups
 
 - [ ] 
 
-## 연결
+## Related
 
 [[ ]] — 

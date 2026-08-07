@@ -1,64 +1,66 @@
 ---
 name: standardize
-description: 여러 문서에 흩어진 같은 작업을 하나의 표준 절차서로 승격시키고, 트러블슈팅 기록을 재사용 가능한 런북으로 만든다. "절차 표준화", "런북으로 만들어줘" 요청이나 standardize 라벨 이슈, 매월 1일 예약 실행 시 사용.
+description: Promotes the same work scattered across several documents into one standard runbook, and turns troubleshooting records into reusable procedures. Use for "standardize this" or "make this a runbook" requests, issues labelled standardize, and the monthly scheduled run.
 ---
 
-# Standardize — 흩어진 경험을 절차로
+# Standardize — scattered experience into a procedure
 
-세 번 겪은 일은 절차가 되어야 합니다. 이 스킬은 **이미 있는 문서만 입력으로** 받아 표준 절차서를 만듭니다. 새로운 사실을 지어내지 않습니다.
+Something you have hit three times should be a procedure. This skill takes **only existing documents** as input and produces a standard runbook. It invents no new facts.
 
-## 승격 기준
+Write in English.
 
-아무거나 표준화하지 않습니다. 다음 중 하나를 만족해야 합니다.
+## Promotion criteria
 
-- 같은 작업이 **서로 다른 문서 2건 이상**에 나타남
-- 같은 원인의 장애가 **2회 이상** 기록됨
-- `00-inbox/`에 같은 주제의 메모가 쌓여 있음
+Not everything gets standardized. One of these must hold.
 
-기준에 맞는 후보가 없으면 **아무것도 만들지 않고 그렇게 보고합니다.** 억지로 만든 절차서는 아무도 안 씁니다.
+- The same work appears in **two or more separate documents**
+- The same cause has been recorded **twice or more**
+- Notes on the same subject have piled up in `00-inbox/`
 
-## 절차
+If nothing meets the bar, **create nothing and report that.** A procedure nobody asked for is a procedure nobody reads.
 
-### 1. 후보를 찾는다
+## Procedure
+
+### 1. Find candidates
 
 ```
-stack 값이 겹치는 문서 묶기
-제목·본문에서 반복되는 명령 찾기 (Grep)
-00-inbox/ 전수 확인
+group documents by overlapping stack values
+Grep for commands that repeat across titles and bodies
+read everything in 00-inbox/
 ```
 
-### 2. 하나를 고른다
+### 2. Pick one
 
-가장 자주 반복됐고, 다음에 또 할 가능성이 높은 것 하나. **한 번에 하나만** 승격시킵니다.
+The one that recurred most and is most likely to recur again. **One promotion at a time.**
 
-### 3. 원본을 읽는다
+### 3. Read the sources
 
-승격 대상이 되는 모든 문서를 끝까지 읽습니다. 요약본으로 작업하지 마세요 — 절차의 핵심은 대체로 세부에 있습니다.
+Read every source document to the end. Do not work from summaries — with procedures, the substance is usually in the detail.
 
-서로 다른 문서가 **같은 단계를 다르게** 하고 있으면 그것 자체가 발견입니다. 어느 쪽이 맞는지 임의로 정하지 말고, 둘 다 적고 "확인 필요"로 표시합니다.
+When two documents do **the same step differently**, that is itself a finding. Do not pick a winner arbitrarily; record both and mark it as needing confirmation.
 
-### 4. 표준 절차서를 쓴다
+### 4. Write the standard runbook
 
-`02-runbook/<작업>.md`, 템플릿은 `07-templates/runbook.md`.
+`02-runbook/<task>.md`, from `07-templates/runbook.md`.
 
-원본에 없어서 채울 수 없는 칸은 **비워 두고 표시합니다.**
+Anything the sources cannot fill, **leave empty and flag it.**
 
 ```markdown
-> ⚠️ 이 절차서는 기존 기록 <경로1>, <경로2> 에서 합성했습니다.
-> 아직 이 순서 그대로 실행해 검증한 적이 없습니다. 첫 실행 시 verified를 채우세요.
+> ⚠️ This runbook was synthesized from <path1> and <path2>.
+> Nobody has executed it in this order yet. Fill in `verified` after the first real run.
 ```
 
-`verified`는 **비워 둡니다.** 합성한 절차는 검증된 절차가 아닙니다. 이 구분이 무너지면 사이트의 재검증 지표가 전부 거짓말이 됩니다.
+Leave `verified` **empty**. A synthesized procedure is not a verified procedure. Blur that line and every freshness number on the site becomes a lie.
 
-### 5. 원본을 정리한다
+### 5. Tidy the sources
 
-- 원본 문서는 **지우지 않습니다.** 새 절차서로 가는 `[[링크]]`를 원본 상단에 추가합니다.
-- `00-inbox/`의 메모가 완전히 흡수됐으면 `06-archive/`로 **옮깁니다** (삭제 아님).
-- 새 절차서에서 원본들로 역링크를 겁니다 — 근거를 추적할 수 있어야 합니다.
+- **Do not delete source documents.** Add a `[[link]]` to the new runbook at the top of each.
+- If a note in `00-inbox/` has been fully absorbed, **move** it to `06-archive/` (move, not delete).
+- Link back from the new runbook to every source — the provenance has to be traceable.
 
-## 마지막에 보고할 것
+## Report at the end
 
-- 승격한 작업과 새 문서 경로
-- 합성에 사용한 원본 경로 전부
-- **원본 간에 서로 달랐던 단계** — 사용자가 판단해야 하는 것. 반드시 짚습니다
-- 후보였지만 기준 미달로 넘긴 것 (있으면 한 줄씩)
+- The work you promoted and the new document path
+- Every source path used in the synthesis
+- **Steps where the sources disagreed** — the user has to decide. Always call these out
+- Candidates you passed over for not meeting the bar (one line each, if any)
