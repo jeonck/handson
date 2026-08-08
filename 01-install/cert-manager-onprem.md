@@ -4,17 +4,24 @@ date: 2026-08-07
 domain: install
 tags: [on-prem, tls, pki]
 stack: [kubernetes, cert-manager, helm, ingress-nginx, kubectl]
-summary: Issue and renew TLS certificates automatically on a cluster whose hostnames do not resolve publicly, using either an internal CA or Let's Encrypt over DNS-01. HTTP-01 cannot work here, and that constraint decides the whole design.
+summary: Issue and renew TLS certificates automatically on a cluster whose hostnames do not resolve publicly, using either an internal CA or Let's Encrypt over DNS-01. HTTP-01 cannot work here, and that constraint decides the whole design. The internal CA path is verified; the DNS-01 path is not.
 source: handson
-env: Target — Kubernetes 1.31 (kubeadm, on-prem) · cert-manager 1.16 · ingress-nginx chart 4.11 · Ubuntu 24.04 LTS
-verified:
+env: Kubernetes 1.31.6 · cert-manager 1.16.2 · ingress-nginx chart 4.11.3 · MetalLB 0.14.8 · Helm 4.2.3 — Path A run on a three-node kind cluster on one bridge; Path B not run
+verified: 2026-08-08
 duration: 30–50 min
 risk: medium
 ---
 
-> ⚠️ **This procedure has not been executed in this environment yet.** It is assembled from upstream
-> cert-manager documentation, so `verified` is empty and the site lists it as needing verification.
-> Run it once on the real cluster, then fill in `verified` and correct whatever was wrong.
+> **Verified 2026-08-08 for Path A only.** Sections 1, 2, A and 5–6 were run end to end on a
+> three-node kind cluster behind [[ingress-nginx-onprem]], finishing with `curl https://…` from a
+> LAN machine with no `-k` and no warning — which is the entire point of the document. One check in
+> section 6 was wrong; see [Where this bit us](#where-this-bit-us).
+>
+> ⚠️ **Path B (Let's Encrypt over DNS-01) has not been run and stays unproven.** It needs a public
+> zone and a DNS provider API token, and issuing a real certificate for a real domain is not
+> something to do incidentally while testing a document. Treat every command in Path B as drafted
+> from upstream documentation. The rate-limit advice in B.1 is the reason to start on staging when
+> you do run it.
 
 [[ingress-nginx-onprem]] terminates TLS but serves a self-signed certificate, so every browser warns and every `curl` needs `-k`. That is tolerable for a week and corrosive after that — people start passing `--insecure` reflexively, and then a real certificate error looks like all the others.
 
@@ -297,8 +304,26 @@ kubectl -n cert-manager logs deployment/cert-manager --tail=100
 
 ```bash
 kubectl get secret demo-tls -o jsonpath='{.data.tls\.crt}' | base64 -d | \
-  openssl x509 -noout -subject -issuer -dates
+  openssl x509 -noout -issuer -dates
 ```
+
+**The subject comes out empty, and that is correct.** cert-manager's ingress-shim builds the
+Certificate from the Ingress's `tls.hosts` and sets no `commonName`, so the hostname lives only in
+the SAN extension. Asking for `-subject` prints a blank line, which reads like a broken certificate.
+Check the SAN instead — that is the field browsers use anyway:
+
+```bash
+kubectl get secret demo-tls -o jsonpath='{.data.tls\.crt}' | base64 -d | \
+  openssl x509 -noout -text | grep -A1 'Subject Alternative Name'
+```
+
+```
+X509v3 Subject Alternative Name: critical
+    DNS:demo.apps.internal
+```
+
+`openssl x509 -ext subjectAltName` is the tidier form and is **not available on macOS**, whose
+`openssl` is LibreSSL. The `-text | grep` above works everywhere.
 
 From your workstation, against the real endpoint:
 
@@ -333,7 +358,9 @@ cert-manager renews at roughly two-thirds of the lifetime. The gap between those
 - [ ] A Certificate reaches `Ready: True` without manual steps
 - [ ] `kubectl get challenge -A` is empty after issuance (path B)
 - [ ] `openssl s_client` from the LAN shows the expected issuer, not the ingress default self-signed cert
-- [ ] `curl https://…` succeeds **without** `-k`
+- [ ] The certificate's **SAN** carries the hostname (the subject is legitimately empty)
+- [ ] `curl https://…` fails with `unable to get local issuer certificate` **before** the root is trusted
+- [ ] `curl https://…` then succeeds **without** `-k`
 - [ ] `status.renewalTime` is set and well before `notAfter`
 - [ ] Path A only: the root certificate is installed on at least one machine that is not the one that generated it
 - [ ] Path B only: the DNS API token is scoped to one zone, and where it expires is written down
@@ -373,9 +400,32 @@ sudo rm /usr/local/share/ca-certificates/internal-ca.crt
 sudo update-ca-certificates --fresh
 ```
 
+## Where this bit us
+
+Path A ran almost exactly as written. One check was wrong.
+
+**Section 6's `-subject` shows nothing.** A certificate issued through the Ingress annotation carries
+no common name — ingress-shim sets `dnsNames` only — so `openssl x509 -noout -subject` prints an
+empty line on a perfectly good certificate. Anyone verifying an internal CA for the first time reads
+that as a failure and goes looking for a problem that is not there. Section 6 now asks for the SAN.
+
+Worth recording because it is the thing the whole document is for: with the root installed on a LAN
+machine, `curl https://demo.apps.internal/` returned the application with **no `-k` and no warning**,
+and the same request before installing the root failed with `unable to get local issuer certificate`.
+That pair, in that order, is the proof — a single passing `curl` proves nothing if you never saw it
+fail.
+
+Everything else held: `crds.enabled=true` installed the CRDs, waiting on the webhook rollout avoided
+the admission error, the CA secret in the `cert-manager` namespace was found by the ClusterIssuer,
+the `Certificate` → `CertificateRequest` chain completed with no `Challenge` objects (correct for a CA
+issuer), `renewalTime` landed at two thirds of a 90-day lifetime, and deleting and re-creating the
+Ingress re-issued with a fresh serial. The root itself came out with the full ten-year validity the
+`duration: 87600h` asks for.
+
 ## Failure points documented upstream
 
-**This is not "where this bit us" — nobody has run this here yet.** These come from cert-manager's documentation and troubleshooting guide. Replace them with what actually happened on your first run.
+These come from cert-manager's documentation and troubleshooting guide. None were hit on Path A; the
+Path B entries are unproven along with the rest of Path B.
 
 **`installCRDs` versus `crds.enabled`** — the flag was renamed. Helm ignores unknown values, so the install looks fine and every Issuer then fails with `no matches for kind`. Section 1. ([Installation with Helm](https://cert-manager.io/docs/installation/helm/))
 
@@ -395,7 +445,8 @@ sudo update-ca-certificates --fresh
 
 ## Follow-ups
 
-- [ ] Run this on the real cluster, correct it, and set `verified`
+- [ ] Run Path B against a real zone on the staging ACME endpoint, correct it, and note in `env` that it has been 📅 2026-09-30
+- [ ] Re-run Path A on the real cluster — kind proved the issuance and the trust chain, not the clock-skew failure mode the prerequisites warn about
 - [ ] Decide which path is the standard here, and write down why — mixing both leaves nobody sure which hosts are trusted where
 - [ ] Path A: get the root certificate into whatever provisions new laptops, not into a wiki page people copy by hand
 - [ ] Path B: record where the DNS API token lives and when it expires

@@ -4,17 +4,23 @@ date: 2026-08-07
 domain: install
 tags: [on-prem, networking, ingress]
 stack: [kubernetes, ingress-nginx, helm, metallb, kubectl]
-summary: Put one LoadBalancer address in front of every HTTP service instead of burning an address per service, with TLS terminated in one place. Preserving the real client IP is what makes this harder than the quickstart suggests.
+summary: Put one LoadBalancer address in front of every HTTP service instead of burning an address per service, with TLS terminated in one place. Preserving the real client IP costs a six-fold longer outage when a node dies, and the obvious way to check it reports the pod's address instead.
 source: handson
-env: Target — Kubernetes 1.31 (kubeadm, on-prem) · ingress-nginx chart 4.11 · MetalLB 0.14 · Ubuntu 24.04 LTS
-verified:
+env: Kubernetes 1.31.6 · ingress-nginx chart 4.11.3 (controller 1.11.3) · MetalLB 0.14.8 · Helm 4.2.3 — run on a three-node kind cluster on one bridge, not on bare metal
+verified: 2026-08-08
 duration: 25–40 min
 risk: medium
 ---
 
-> ⚠️ **This procedure has not been executed in this environment yet.** It is assembled from upstream
-> ingress-nginx and MetalLB documentation, so `verified` is empty and the site lists it as needing
-> verification. Run it once on the real cluster, then fill in `verified` and correct whatever was wrong.
+> **Verified 2026-08-08 on a three-node kind cluster sharing one bridge**, with MetalLB holding the
+> address — the same environment [[metallb-l2-onprem]] had to use, and for the same reason: a real
+> LoadBalancer address only behaves like one on a real L2 segment. Three things in the draft were
+> wrong, and the client-IP check was the worst of them: it silently reported the wrong number. See
+> [Where this bit us](#where-this-bit-us).
+>
+> Not covered by that run: a real switch, a real DNS zone, and hardware. The `Local` failover
+> behaviour in section 4 is timing-sensitive and may look different on machines that take longer to
+> be declared dead.
 
 With [[metallb-l2-onprem]] in place, every `type: LoadBalancer` service takes an address from a pool that has maybe ten of them. Ten services and you are out, and each one needs its own DNS record and its own certificate. An ingress controller collapses that: **one address, one certificate story, host and path routing behind it.**
 
@@ -139,7 +145,10 @@ kubectl -n ingress-nginx get svc ingress-nginx-controller
 kubectl get ingressclass
 ```
 
-`nginx (default)` should appear. **Only one IngressClass may be default.** With two, Ingress objects that omit `ingressClassName` are handled unpredictably:
+**`kubectl get ingressclass` does not mark the default one.** Unlike StorageClass, there is no
+`(default)` suffix in that output — you get a bare `nginx` row whether or not it is the default, so
+the table tells you nothing here. Use the annotation directly. **Only one IngressClass may be
+default**; with two, Ingress objects that omit `ingressClassName` are handled unpredictably:
 
 ```bash
 kubectl get ingressclass -o jsonpath='{range .items[*]}{.metadata.name}{"\t"}{.metadata.annotations.ingressclass\.kubernetes\.io/is-default-class}{"\n"}{end}'
@@ -215,13 +224,55 @@ Which is why `replicaCount: 2` with a spread constraint is in the values above. 
 kubectl -n ingress-nginx get pods -o wide      # replicas on different nodes
 ```
 
+**Do not try to read the client IP off the demo page.** `nginxdemos/hello:plain-text` prints
+`Server address`, which is the *pod's own* IP — grep for "address" and you get `10.244.2.4`, a number
+that looks like an answer and is not one. It has no client-address line at all.
+
+The controller's access log is the honest source; its first field is the address nginx actually saw:
+
 ```bash
-curl -s -H 'Host: demo.apps.<DOMAIN>' http://192.168.1.240/ | grep -i 'client address\|server address'
+# make a request from the LAN, then look at what arrived
+kubectl -n ingress-nginx logs -l app.kubernetes.io/component=controller --tail=20 | grep 'GET /'
 ```
 
-The demo image prints the client address it sees. It should be your workstation's LAN address, not a node's.
+```
+10.89.0.10 - - [08/Aug/2026:21:17:49 +0000] "GET / HTTP/1.1" 200 149 "-" "curl/8.21.0" ...
+```
+
+That address must be the client's, not a node's. Measured both ways on the verification run, with the
+client at `10.89.0.10` and nodes at `10.89.0.7` and `10.89.0.9`:
+
+| `externalTrafficPolicy` | First field in the access log |
+|---|---|
+| `Local` | `10.89.0.10` — the client |
+| `Cluster` | `10.244.1.1` — a node-side address, client identity gone |
+
+Two things about that log worth knowing before you go looking: the default format does **not** include
+the `Host` header, so you cannot filter by hostname — filter by client address or path. And with
+`Local`, only the pod on the announcing node logs anything, so check both replicas or use
+`-l app.kubernetes.io/component=controller` as above.
 
 On a three-node cluster, running the controller as a DaemonSet is also reasonable — every node can then serve, and the announcing node always has a local endpoint. That trades a little memory on each node for one less failure mode.
+
+### What `Local` costs at failover
+
+Preserving the client IP is not free, and the price is paid exactly when a node dies. Losing the node
+that holds the address produced **about 40 seconds of alternating success and failure** before
+settling — not the clean handover a plain MetalLB service gives:
+
+```
++1s ✗  +3s ✗  +5s ✗  +7s ✓  +8s ✗  +11s ✗  +16s ✗  +21s ✗  +24s ✗  +33s ✗  +39s ✗  +41s ✓ …
+```
+
+With `Local`, MetalLB will only announce from a node holding a *ready endpoint*, so the address
+cannot settle until Kubernetes has finished marking the dead node's controller pod NotReady — and it
+flaps between candidates while that is in progress. For comparison, the same node loss against a
+LoadBalancer service without `Local` recovered in about six seconds ([[metallb-l2-onprem]]).
+
+Deleting a controller pod is far gentler: one failed probe, recovered by the next second.
+
+So the trade in this section is not only "client IP versus which nodes can serve" — it is also a
+roughly six-fold longer outage on node loss. Worth stating to whoever owns the SLA before choosing.
 
 ## 5. TLS
 
@@ -258,13 +309,13 @@ Getting the certificates themselves is the real work on-prem, where hosts are no
 
 - [ ] `kubectl -n ingress-nginx get pods -o wide` — 2 replicas, `Running`, on different nodes
 - [ ] `kubectl -n ingress-nginx get svc ingress-nginx-controller` — `EXTERNAL-IP` is exactly the pinned address
-- [ ] `kubectl get ingressclass` — `nginx (default)`, and it is the only default
+- [ ] The IngressClass annotation check returns exactly one `true` (the `get` output will not tell you)
 - [ ] An Ingress object gets `<INGRESS_IP>` in its `ADDRESS` column
 - [ ] `curl` with the right `Host` header returns the application from the LAN
-- [ ] The application sees the **client's** IP, not a node's
+- [ ] The **controller access log's first field** is the client's IP, not a node's — not the demo page
 - [ ] A wrong `Host` returns nginx's 404, not a connection failure (proves the controller is answering)
-- [ ] Delete one controller pod — traffic continues through the other replica
-- [ ] Reboot the node holding the address — the address moves and traffic recovers
+- [ ] Delete one controller pod — traffic continues, with at most a one-second blip
+- [ ] Lose the node holding the address — the address moves and traffic recovers, allowing ~40s with `externalTrafficPolicy: Local`
 - [ ] The backing service is still `ClusterIP`, holding no LAN address of its own
 
 ## Rollback
@@ -288,9 +339,30 @@ kubectl get ingress -A
 
 If the IngressClass was default and another controller is expected to take over, note that existing Ingress objects with an explicit `ingressClassName: nginx` will not move on their own.
 
+## Where this bit us
+
+**The client-IP check reported the wrong number rather than failing.** `nginxdemos/hello:plain-text`
+has no client-address line; the `Server address` it prints is the backend pod's own IP. Grepping for
+"address" returns `10.244.2.4` on a correctly configured cluster and on a misconfigured one alike, so
+the check could never have caught the failure it exists to catch. The controller access log settles
+it, and the `Local`-versus-`Cluster` comparison in section 4 is what proves the log is telling the
+truth.
+
+**`Local` costs about 40 seconds of flapping when a node dies**, against roughly six for a plain
+MetalLB service. This document recommended `Local` without pricing it. Section 4 now does.
+
+**`kubectl get ingressclass` never says `(default)`.** That is a StorageClass behaviour; the
+IngressClass table looks identical whether or not a default is set, so the instruction to look for
+`nginx (default)` was checking something that cannot appear.
+
+What worked exactly as written, for the record: the `metallb.io/loadBalancerIPs` annotation pinned the
+address on the first try, two replicas landed on separate nodes under the spread constraint, host
+routing and the 404-on-wrong-host both behaved, and the backing service stayed `ClusterIP` throughout.
+Helm 4.2.3 installed chart 4.11.3 without complaint, despite the prerequisite table asking for Helm 3.
+
 ## Failure points documented upstream
 
-**This is not "where this bit us" — nobody has run this here yet.** These come from the ingress-nginx and MetalLB documentation. Replace them with what actually happened on your first run.
+These come from the ingress-nginx and MetalLB documentation, and were not hit on the run above.
 
 **Two default IngressClasses** — Ingress objects without an explicit class are handled by whichever controller reacts, which changes between restarts. Section 2.
 
@@ -298,7 +370,7 @@ If the IngressClass was default and another controller is expected to take over,
 
 **413 on upload** — `proxy-body-size` defaults to 1m. The failure surfaces as a broken upload button in an application nobody suspects. Set in the values above. ([ingress-nginx ConfigMap reference](https://kubernetes.github.io/ingress-nginx/user-guide/nginx-configuration/configmap/))
 
-**`externalTrafficPolicy: Local` with a single replica** — the address lands on a node with no controller pod and nothing answers, intermittently, depending on which node MetalLB elected. Section 4.
+**`externalTrafficPolicy: Local` with a single replica** — the address lands on a node with no controller pod and nothing answers, intermittently, depending on which node MetalLB elected. Section 4. Not reproduced, because the two-replica spread above is exactly the defence against it; the flapping measured during node loss is the milder version of the same mechanism.
 
 **Snippet annotations rejected** — `nginx.ingress.kubernetes.io/configuration-snippet` is disabled by default in recent versions after a set of CVEs. Enabling it re-opens that class of risk; prefer a supported annotation or a ConfigMap setting. ([Annotations reference](https://kubernetes.github.io/ingress-nginx/user-guide/nginx-configuration/annotations/))
 
@@ -308,8 +380,8 @@ If the IngressClass was default and another controller is expected to take over,
 
 ## Follow-ups
 
-- [ ] Run this on the real cluster, correct it, and set `verified`
-- [ ] Set up cert-manager with a DNS-01 solver or an internal CA — on-prem hosts cannot be validated over HTTP-01. Procedure drafted in [[cert-manager-onprem]], still unverified
+- [ ] Re-run on the real cluster — containers on a bridge proved the routing and the client IP, but node-death timing depends on real machines 📅 2026-09-30
+- [ ] Re-measure the `Local` failover window on hardware, and decide whether the client IP is worth it at that number
 - [ ] Create the wildcard DNS record so hostnames work for everyone, not just workstations with an edited hosts file
 - [ ] Move Argo CD from its own LoadBalancer address to a host behind this controller, gRPC path included
 - [ ] Decide whether the controller should be a DaemonSet on a three-node cluster
@@ -318,6 +390,7 @@ If the IngressClass was default and another controller is expected to take over,
 ## Related
 
 [[metallb-l2-onprem]] — supplies the address this controller holds. This document answers the "one address for an ingress instead of one per service" follow-up left open there.
+[[cert-manager-onprem]] — replaces the self-signed certificate section 5 leaves you with. Its internal-CA path is verified against exactly this controller.
 [[onprem-3node-kubeadm-ubuntu]] — the cluster underneath.
 [[argocd-helm-ha-install]] — the first real candidate to move behind this, and the source of the gRPC trap above.
 [[2026-08-07-gateway-api]] — where this layer is heading, and worth reading before standardising on ingress-nginx.
