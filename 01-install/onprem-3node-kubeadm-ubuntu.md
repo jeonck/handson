@@ -4,18 +4,26 @@ date: 2026-08-07
 domain: install
 tags: [on-prem, bare-metal, cluster-bootstrap]
 stack: [ubuntu, kubernetes, kubeadm, containerd, calico, kubectl]
-summary: Build a three-machine cluster on your own hardware — OS prep, containerd, kubeadm init and join, a CNI, remote kubectl access, and a workload verified pod by pod. The cgroup driver and the pod CIDR are where a first cluster stalls.
+summary: Build a three-machine cluster on your own hardware — OS prep, containerd, kubeadm init and join, a CNI, remote kubectl access, and a workload verified pod by pod. A missing conntrack stops kubeadm init outright, and two undocumented Calico ports leave every calico-node at 0/1 on a cluster that otherwise looks finished.
 source: handson
-env: Target — Ubuntu 24.04 LTS · Kubernetes 1.31 (kubeadm) · containerd 1.7 · Calico 3.28
-verified:
+env: Ubuntu 24.04.4 LTS · Kubernetes 1.31.14 (kubeadm) · containerd 2.2.1 · Calico 3.28.2 — run on 3× AWS EC2 t3.medium, not on bare metal
+verified: 2026-08-08
 duration: 60–90 min
 risk: medium
 ---
 
-> ⚠️ **This procedure has not been executed in this environment yet.** It is assembled from upstream
-> documentation (kubeadm, containerd, Calico), so `verified` is empty and the site will list it as
-> needing verification. Run it once on real hardware, then fill in `verified` and correct whatever
-> was wrong. Until then, treat every command as unproven.
+> **Verified 2026-08-08 on three EC2 instances, not on bare metal.** Every command below was run in
+> order on 3× `t3.medium` (2 vCPU / 4 GB / 40 GB, Ubuntu 24.04.4) in one flat `10.10.10.0/24` subnet,
+> with a security group opened to exactly the ports this document lists — which is how the missing
+> ones were found. Four things in the original draft did not work and have been corrected: the
+> package list in §1.5, two ports in the Ports table, and the `scp` in §7. See
+> [Where this bit us](#where-this-bit-us).
+>
+> **What that run does not cover**, because EC2 supplies it for free: real NIC and driver behaviour,
+> disabling swap (the cloud image has none, so §1.2 is a no-op there), unique `product_uuid` on cloned
+> templates, and `ufw` (inactive on the AMI — the port rules were verified as security-group rules
+> instead). Those four are still unproven on hardware. The Terraform that builds the harness is at
+> `terraform-aws-lab/lab20-onprem-k8s-verify`.
 
 Three physical or virtual machines you own, from a fresh Ubuntu install to a pod you can `kubectl get` from your laptop. No cloud provider, no load balancer, no shared storage — the plain case that on-prem work actually starts from.
 
@@ -60,7 +68,23 @@ Open these before starting, or the join in step 6 times out with no useful error
 | control plane | 10257/tcp, 10259/tcp | controller-manager, scheduler |
 | all | 10250/tcp | kubelet API |
 | all | 4789/udp | Calico VXLAN overlay |
+| all | 179/tcp | **Calico BGP (BIRD)** — see below |
+| all | 5473/tcp | **Calico Typha** — see below |
+| all | ICMP echo | the `ping` prerequisite check above |
 | workers | 30000–32767/tcp | NodePort range |
+
+**179 and 5473 are not on the upstream Kubernetes ports page, and leaving them closed produces a
+cluster that looks fine.** The Calico install in step 4 uses the tigera operator, which enables BGP
+by default and runs Typha; `calico-node`'s readiness probe is `-bird-ready -felix-ready`. With those
+two ports filtered, nodes still go `Ready`, pods still get addresses and still talk to each other
+over VXLAN — and every `calico-node` sits at `0/1` permanently, so the DaemonSet never converges and
+no future rollout of it can complete. Both were found by building the firewall from this table and
+nothing else.
+
+Typha makes it worse by being intermittent-looking: the operator runs fewer Typha replicas than you
+have nodes (two on a three-node cluster), and the nodes that happen to host a replica reach it over
+loopback. So the symptom is *one arbitrary node* stuck at `0/1`, which reads like a broken machine
+rather than a firewall rule.
 
 If `ufw` is active:
 
@@ -72,14 +96,22 @@ sudo ufw allow 10250/tcp
 sudo ufw allow 10257/tcp
 sudo ufw allow 10259/tcp
 sudo ufw allow 4789/udp
+sudo ufw allow 179/tcp
+sudo ufw allow 5473/tcp
 
 # workers
 sudo ufw allow 10250/tcp
 sudo ufw allow 30000:32767/tcp
 sudo ufw allow 4789/udp
+sudo ufw allow 179/tcp
+sudo ufw allow 5473/tcp
 ```
 
-- Source: [Ports and Protocols](https://kubernetes.io/docs/reference/networking/ports-and-protocols/)
+`ufw` permits ICMP echo by default, so the `ping` check in the Prerequisites table needs no rule
+here. A firewall that does not — a cloud security group, or `iptables` written by hand — has to allow
+it explicitly or that prerequisite fails for a reason unrelated to name resolution.
+
+- Source: [Ports and Protocols](https://kubernetes.io/docs/reference/networking/ports-and-protocols/) — 179 and 5473 are Calico's, and are not listed there.
 
 ---
 
@@ -181,6 +213,18 @@ grep SystemdCgroup /etc/containerd/config.toml
 sudo systemctl status containerd --no-pager
 ```
 
+On 2026-08-08 the Ubuntu 24.04 package was **containerd 2.2.1**, not the 1.7 this document was first
+drafted against. That is a major-version jump: the generated config is `version = 3` and the CRI
+plugin key moved from `io.containerd.grpc.v1.cri` to `io.containerd.cri.v1.runtime`. The `sed` above
+is unaffected — the default is still `SystemdCgroup = false` and the line still matches — but any
+config snippet you find online that references the old plugin path will not apply. Check what you
+actually installed rather than assuming 1.7:
+
+```bash
+containerd --version
+head -1 /etc/containerd/config.toml    # expect: version = 3
+```
+
 - Source: [Configuring the systemd cgroup driver](https://kubernetes.io/docs/setup/production-environment/container-runtimes/#containerd-systemd)
 
 ### 1.5 kubeadm, kubelet, kubectl
@@ -200,6 +244,23 @@ echo 'deb [signed-by=/etc/apt/keyrings/kubernetes-apt-keyring.gpg] https://pkgs.
 sudo apt-get update
 sudo apt-get install -y kubelet kubeadm kubectl
 sudo apt-mark hold kubelet kubeadm kubectl
+```
+
+**`conntrack` and `socat` are not pulled in by any of this, and `kubeadm init` will not start without
+`conntrack`.** The kubelet package declares `Depends: iptables, kubernetes-cni, mount, util-linux,
+libc6` and nothing else; a full Ubuntu server install usually happens to have both binaries already,
+which is why this gap survives, but a minimal or cloud image has neither. Install them explicitly:
+
+```bash
+sudo apt-get install -y conntrack socat
+```
+
+Skipping this ends step 2 immediately with `[ERROR FileExisting-conntrack]: conntrack not found in
+system path`. `socat` is only a preflight *warning*, but without it `kubectl port-forward` fails
+later, well away from anything that would point you back here.
+
+```bash
+command -v conntrack socat
 ```
 
 `apt-mark hold` is not optional. An unattended `apt upgrade` that bumps kubelet a minor version out from under the control plane breaks the version skew policy, and the node goes `NotReady` at 03:00 for no visible reason.
@@ -310,6 +371,13 @@ kubectl get nodes
 
 The control-plane node flips to `Ready` once `calico-node` is running on it. That transition is the signal to proceed.
 
+> **If you are rehearsing this somewhere other than a flat LAN, `VXLANCrossSubnet` is the wrong
+> setting.** It encapsulates only between subnets, so with every node in one subnet it routes pod
+> traffic natively — correct and faster on a real switch, and silently dropped by any network that
+> filters on IP address, an AWS VPC included. There the symptom is `Ready` nodes, running pods and
+> every cross-node connection timing out. Use `encapsulation: VXLAN` in that case and keep 4789/udp
+> open; on the hardware this document targets, leave it as written.
+
 - Source: [Calico — Kubernetes quickstart](https://docs.tigera.io/calico/latest/getting-started/kubernetes/quickstart)
 
 ---
@@ -319,10 +387,14 @@ The control-plane node flips to `Ready` once `calico-node` is running on it. Tha
 Before joining workers, record what is on disk. The `env` field of this document, and every future upgrade decision, depends on it.
 
 ```bash
-kubectl version -o yaml | grep -A2 serverVersion
+kubectl version -o yaml | grep -A6 serverVersion    # -A2 stops before gitVersion
 containerd --version
 kubectl -n calico-system get daemonset calico-node -o jsonpath='{.spec.template.spec.containers[0].image}{"\n"}'
 ```
+
+The keys under `serverVersion` come out alphabetically, so `buildDate`, `compiler`, `gitCommit` and
+`gitTreeState` all precede `gitVersion` — the one thing being asked for. `-A2` prints the build date
+and the compiler and nothing useful.
 
 ---
 
@@ -371,13 +443,24 @@ On a 4 GB control-plane node this is a bad trade: a memory-hungry pod evicting e
 
 Working over SSH on the control plane gets old fast, and it also means every operator shares one shell history.
 
+`/etc/kubernetes/admin.conf` is `-rw------- root root`, so copying it directly over SSH as a normal
+user fails with `Permission denied` before anything else happens. Copy the user-owned duplicate that
+step 2.1 already made instead:
+
 ```bash
 # from your laptop
-scp <USER>@<CP_IP>:/etc/kubernetes/admin.conf ~/.kube/onprem.conf
+scp <USER>@<CP_IP>:.kube/config ~/.kube/onprem.conf
 chmod 600 ~/.kube/onprem.conf
 ```
 
-`admin.conf` already points at `<CP_IP>:6443` because of `--control-plane-endpoint`. Confirm it before trusting it:
+If you skipped 2.1, read it through `sudo` rather than loosening the permissions on the original:
+
+```bash
+ssh <USER>@<CP_IP> 'sudo cat /etc/kubernetes/admin.conf' > ~/.kube/onprem.conf
+chmod 600 ~/.kube/onprem.conf
+```
+
+The file already points at `<CP_IP>:6443` because of `--control-plane-endpoint`. Confirm it before trusting it:
 
 ```bash
 grep 'server:' ~/.kube/onprem.conf
@@ -456,16 +539,27 @@ Everything here has to pass before you call the cluster built — and before you
 - [ ] `kubectl get nodes` — three nodes, all `Ready`, all on the expected version
 - [ ] `kubectl get pods -A` — no pod outside `Running`/`Completed`, restart counts at 0
 - [ ] `kubectl -n kube-system get pods -l k8s-app=kube-dns` — CoreDNS `Running`, 2 replicas
-- [ ] `kubectl -n calico-system get pods -o wide` — one `calico-node` per node
+- [ ] `kubectl -n calico-system get pods -o wide` — one `calico-node` per node, each **`1/1`**, not merely present
+- [ ] `kubectl -n calico-system rollout status ds/calico-node` — completes rather than timing out
 - [ ] A 3-replica deployment spreads across both workers
 - [ ] Service call from a pod returns `200` (cross-node networking)
 - [ ] `nslookup` of a service name resolves (cluster DNS)
 - [ ] `kubectl get nodes` works from the workstation, not only over SSH
 - [ ] `swapon --show` prints nothing on all three nodes
 - [ ] `apt-mark showhold` lists kubelet, kubeadm, kubectl on all three nodes
-- [ ] Reboot one worker — it rejoins `Ready` on its own and pods reschedule
+- [ ] Reboot one worker — it rejoins `Ready` on its own and its pods come back
 
 That last one is the check people skip, and it is the one that catches swap re-enabling itself in `/etc/fstab` and containerd not being enabled at boot.
+
+On the 2026-08-08 run the rebooted worker was back over SSH inside a minute and `Ready` shortly after,
+and the service kept answering `200` throughout on the surviving replicas. Its pod does **not** get
+rescheduled elsewhere, though — it stays `Unknown` on the rebooting node for a couple of minutes and
+is then restarted in place by the returning kubelet, with a new pod IP and `RESTARTS 1`. Watch for it
+coming back rather than for it moving.
+
+```bash
+kubectl get deployment web        # 3/3 again is the signal, not the pod list
+```
 
 ---
 
@@ -498,17 +592,45 @@ sudo apt-get purge -y kubelet kubeadm kubectl
 
 ---
 
-## Failure points documented upstream
+## Where this bit us
 
-**This section is not "where this bit us" — nobody has run this procedure here yet.** These are the failure modes the upstream documentation and release notes call out. Replace this section with what actually happened on your first run, and delete anything you never hit.
+Four failures on the 2026-08-08 run, in the order they happened.
+
+**`kubeadm init` refused to start: `conntrack` not in path.** A fatal preflight error, not a warning.
+The package is not a dependency of kubelet and this document did not install it. Cost about ten
+minutes, entirely because the error arrives at the end of §1.5's work rather than during it. §1.5 now
+installs it, together with `socat` — which is only a warning at init time and would otherwise have
+resurfaced much later as a broken `kubectl port-forward`.
+
+**Every `calico-node` stuck at `0/1`, with a cluster that otherwise looked finished.** Three nodes
+`Ready`, all pods `Running`, workloads scheduling normally — and `kubectl -n calico-system get pods`
+showing `0/1` on all three, forever. The probe is `-bird-ready`, BIRD needs **179/tcp**, and 179 was
+not in the Ports table because it is not on the upstream Kubernetes ports page either. Opening it
+flipped two of the three to `1/1` within one 30-second probe interval, which is what confirmed the
+cause.
+
+**The third node stayed `0/1` after that, and looked like a broken machine.** It was **5473/tcp**:
+`confd` on that node could not reach Typha, so it never wrote `bird.cfg`, so BIRD never started —
+`bird: Unable to open configuration file /etc/calico/confd/config/bird.cfg`. The operator runs two
+Typha replicas on a three-node cluster; the two nodes hosting one reached it over loopback and
+recovered as soon as 179 opened, and the one without a replica did not. **A missing port that
+presents as one node out of three is the trap here** — the instinct is to go and debug that node.
+
+**`scp` of `admin.conf` in §7 failed on the first try**, `Permission denied`, because the file is
+`0600 root:root` and SSH lands as an unprivileged user. Copy the duplicate §2.1 makes, or read it
+through `sudo`. §7 now does the former.
+
+None of these are visible without a firewall built from exactly this document's port list — which is
+what the AWS harness enforces, and why it found them. Verified on EC2, so the traps below remain
+inherited from upstream rather than seen here:
 
 **cgroup driver mismatch** — containerd left on cgroupfs while kubelet uses systemd. Pods start and then get killed or ignore their limits under load. Section 1.4. ([kubeadm docs](https://kubernetes.io/docs/setup/production-environment/container-runtimes/#containerd-systemd))
 
 **Pod CIDR mismatch** — `--pod-network-cidr` and the CNI's pool disagree. Nodes reach `Ready`, pods get addresses, and cross-node traffic goes nowhere. Sections 2 and 4.
 
-**Swap back after reboot** — `swapoff -a` without the `/etc/fstab` edit. Survives until the first reboot, then kubelet will not start. Section 1.2.
+**Swap back after reboot** — `swapoff -a` without the `/etc/fstab` edit. Survives until the first reboot, then kubelet will not start. Section 1.2. The EC2 image ships no swap at all, so this stayed untested.
 
-**Cloned VMs sharing `product_uuid` or MAC** — nodes overwrite each other's registration. Prerequisites table.
+**Cloned VMs sharing `product_uuid` or MAC** — nodes overwrite each other's registration. Prerequisites table. EC2 never produces duplicates, so this stayed untested.
 
 **Expired join token** — the bootstrap token is 24-hour by default, so the join line saved on install day stops working. Regenerate with `kubeadm token create --print-join-command`. Section 3.
 
@@ -516,7 +638,7 @@ sudo apt-get purge -y kubelet kubeadm kubectl
 
 ## Follow-ups
 
-- [ ] Run this procedure end to end on real hardware, correct it, and set `verified`
+- [ ] Re-run this on real hardware and close the four gaps EC2 papered over — swap, `product_uuid` on cloned templates, `ufw` as an actual firewall, and NIC behaviour 📅 2026-09-30
 - [ ] Give the cluster a default StorageClass — a bare cluster has none, so any PVC stays `Pending`. Procedure drafted in [[longhorn-storage-onprem]], still unverified
 - [ ] Give the cluster working `type: LoadBalancer` services — on-prem has no cloud load balancer, so they stay `Pending` until something answers. Procedure drafted in [[metallb-l2-onprem]], still unverified
 - [ ] Replace `admin.conf` sharing with per-user credentials before a second person needs access
