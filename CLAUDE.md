@@ -47,6 +47,7 @@ Rules:
 - `summary` is mandatory. The site's card preview uses it.
 - `stack` holds lowercase kebab-case tool names. The site's stack axis and search use it.
 - **`verified` is only ever a day it actually ran.** Never guess. If that value is false, every freshness number on the site is meaningless. With no basis, leave it empty.
+- **When it ran somewhere other than what the document targets, `env` says so.** A procedure for bare metal proven on EC2, or a LAN mechanism proven on a container bridge, is verified — of a substitute. Name the substitute and what it could not exercise; a date alone implies more than was tested. If only part of the document ran, `verified` still takes the date and the banner names the part that did not.
 - `risk`: `low` = easy to undo, no production impact / `medium` = can affect service, rollback exists / `high` = includes a step that cannot be undone.
 - Dates are always absolute `YYYY-MM-DD`. No relative expressions like "last week".
 - Follow-ups go under a `## Follow-ups` heading as `- [ ] text 📅 YYYY-MM-DD` — that heading is what makes the site count them as open work rather than as a verification checklist.
@@ -61,6 +62,26 @@ Rules:
 3. **Where this bit us** — only traps actually hit. Never imagined.
 
 `troubleshoot` documents keep the symptom → branch → action shape, with a check command attached to each cause.
+
+### Every check must be able to fail
+
+A verification step earns its place only if there is a realistic failure it would catch. Four of the
+six procedures run on 2026-08-08 shipped a check that passed on a broken cluster — each one read a
+*proxy* for the property instead of the property. Evidence in [[2026-08-08-weekly]].
+
+- **Check the property, not a stand-in.** Pod readiness (`1/1`), not pod presence. Volume robustness,
+  not whether the data happens to read back. The ARP entry, not the HTTP status code.
+- **State the pass condition precisely enough to be wrong.** `1/1` rather than "running"; "the
+  client's address" rather than "an address"; `healthy` rather than "attached".
+- **Where a check has a known false pass, write it down next to the check.** "curl from a cluster
+  node returns 200 whether or not this works" is worth more to the reader than the check itself.
+- **Prefer a check you have watched fail.** A pass observed once, with the failing case never seen,
+  is an unproven check — mark it as such instead of implying it was tested. Where it is cheap to
+  break the thing on purpose, break it, and record both outputs.
+
+The same applies in reverse: a correct result that reads like a failure costs someone an afternoon.
+If the expected output looks alarming — an empty field, a `NotReady`, a `patched (no change)` — say
+so at the point it appears.
 
 ## Writing commands
 
