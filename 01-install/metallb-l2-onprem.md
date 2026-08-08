@@ -298,7 +298,7 @@ Stale ARP entries on client machines can outlive the removal — the address wil
 
 - [ ] Run this on the real cluster, correct it, and set `verified`
 - [ ] Record the reserved LAN range in the network documentation, not only in the manifest
-- [ ] Decide whether an ingress controller should take a single LoadBalancer address, with everything else behind it on ClusterIP — cheaper than an address per service
+- [ ] Put an ingress controller on a single LoadBalancer address, with everything else behind it on ClusterIP — cheaper than an address per service. Procedure drafted in [[ingress-nginx-onprem]], still unverified
 - [ ] Revisit BGP mode if any single service outgrows one node's bandwidth
 
 ## Related
