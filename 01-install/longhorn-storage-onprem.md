@@ -539,7 +539,7 @@ See [[k8s-node-drain-replace]] before draining a node that holds replicas.
 ## Follow-ups
 
 - [ ] Re-run on real hardware — EC2 gave real block devices and real iSCSI, but not real disk controllers, and `multipathd` matters more where multipath is genuinely in use 📅 2026-09-30
-- [ ] Configure a backup target — Longhorn snapshots live on the same disks as the data, so they are not a backup. S3 or an NFS share off the cluster
+- [ ] Configure a backup target — Longhorn snapshots live on the same disks as the data, so they are not a backup. S3 or an NFS share off the cluster. Procedure drafted in [[longhorn-backup-target-onprem]], not yet run
 - [ ] Put basic auth or an ingress with real authentication in front of the UI before anyone else needs it
 - [ ] Decide the replica count per workload rather than globally — a rebuildable cache does not need three copies
 - [ ] Write a runbook for planned node maintenance with replicas in play, since draining is no longer a pure Kubernetes operation
