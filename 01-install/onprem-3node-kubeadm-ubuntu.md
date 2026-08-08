@@ -517,7 +517,7 @@ sudo apt-get purge -y kubelet kubeadm kubectl
 ## Follow-ups
 
 - [ ] Run this procedure end to end on real hardware, correct it, and set `verified`
-- [ ] Decide on storage — a bare cluster has no default StorageClass, so any PVC stays `Pending`
+- [ ] Give the cluster a default StorageClass — a bare cluster has none, so any PVC stays `Pending`. Procedure drafted in [[longhorn-storage-onprem]], still unverified
 - [ ] Give the cluster working `type: LoadBalancer` services — on-prem has no cloud load balancer, so they stay `Pending` until something answers. Procedure drafted in [[metallb-l2-onprem]], still unverified
 - [ ] Replace `admin.conf` sharing with per-user credentials before a second person needs access
 - [ ] Set up etcd backups — a single control plane means etcd is the whole cluster
