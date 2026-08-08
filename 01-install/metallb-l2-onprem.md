@@ -6,26 +6,24 @@ tags: [on-prem, bare-metal, networking]
 stack: [kubernetes, metallb, kubectl, calico]
 summary: Hand out LAN addresses to LoadBalancer services on hardware you own, using MetalLB in L2 mode. Testing it from a cluster node returns 200 whether or not the mechanism works — kube-proxy answers locally, and the ARP table is the only honest check.
 source: handson
-env: Kubernetes 1.31.14 (kubeadm) · MetalLB 0.14.8 · Calico 3.28.2 · Ubuntu 24.04.4 LTS — install path exercised on AWS EC2 2026-08-08; L2 announcement cannot be exercised there
-verified:
+env: MetalLB 0.14.8 · install path on Kubernetes 1.31.14 (kubeadm/Calico 3.28.2/Ubuntu 24.04.4, AWS EC2) · L2 announcement and failover on Kubernetes 1.32.2 (kind 0.27 on podman, kindnet, one bridge) — not yet on bare metal
+verified: 2026-08-08
 duration: 20–30 min
 risk: medium
 ---
 
-> ⚠️ **`verified` is deliberately still empty.** On 2026-08-08 this was run end to end on a
-> three-node EC2 cluster, and the install path — CRDs, pool, advertisement, address assignment,
-> leader election — worked and has been corrected where it was wrong. But **the thing this document
-> is actually about, answering ARP on a LAN, cannot be exercised on a cloud VPC at all**, so the
-> checks that matter most are still unproven. Marking it verified on the strength of the parts that
-> did run would be the more dishonest option.
+> **Verified 2026-08-08, across two environments, because no single one could do it.** The install
+> path ran on a three-node EC2 cluster. The L2 mechanism itself — ARP answered for the assigned
+> address, the address moving when a node dies — was verified on a three-node kind cluster sharing
+> one bridge, where ARP is real. Both are in [Rehearsing this without hardware](#rehearsing-this-without-hardware).
 >
-> What was proven not to work there, so nobody repeats the attempt: an AWS VPC does not deliver
-> traffic to an address that is not assigned to an ENI, and does not forward ARP for one. From a LAN
-> machine outside the cluster, the assigned VIP gives `curl` → `000` and `ip neigh` → `FAILED`, while
-> a real node address on the same subnet resolves to a MAC and answers normally. Rehearse this on
-> hardware, a home lab, or nested VMs on one bridge — not on a cloud.
+> **Do not rehearse L2 mode on a cloud.** An AWS VPC does not deliver traffic to an address no ENI
+> owns, and does not forward ARP for one. From a LAN machine outside the cluster the assigned VIP
+> gives `curl` → `000` and `ip neigh` → `FAILED`, while a node address on the same subnet resolves
+> and answers normally. Nothing about the configuration can fix that.
 >
-> Four corrections did come out of the run. See [What the EC2 run found](#what-the-ec2-run-found).
+> Five corrections came out of the two runs, and one of them makes a cluster look healthy when it is
+> not. See [Where this bit us](#where-this-bit-us).
 
 On a cloud provider, `type: LoadBalancer` calls an API and an address appears. On your own hardware nothing answers that call, so the service sits at `<pending>` forever. MetalLB is the thing that answers it.
 
@@ -261,39 +259,58 @@ ip neigh show 192.168.1.240      # or: arp -n | grep 192.168.1.240
 one line. `FAILED`, or no entry, means nothing answered the ARP request — the announcement is not
 reaching the segment.
 
+Check the MAC against the node rather than trusting the address, because that is the assertion:
+
+```bash
+# on the announcing node named in the nodeAssigned event
+cat /sys/class/net/<IFACE>/address
+```
+
+On the verification run the client's ARP entry read `d6:8d:1a:ce:8a:06`, the announcing node's
+interface read the same, and the `nodeAssigned` event named that node. Three independent sources
+agreeing is what "verified" means here.
+
 ### Failover test
 
 The reason to run L2 mode at all is that it survives losing a node. Verify it rather than assuming it.
 
-**Cordon and drain do not move the announcement.** This was the plan here and it does not work: the
-speaker is a DaemonSet, `drain --ignore-daemonsets` leaves it running, and a cordoned node keeps
-announcing. Verified on 2026-08-08 — the address stayed on the drained node for as long as it was
-watched, and moved within about 25 seconds of the speaker actually going away.
+**Two obvious ways to do this both fail to test anything.** Worth knowing before you conclude that
+failover works.
 
-So drain tests pod eviction, not L2 failover. To test failover, take the speaker off the node:
+*Cordon and drain does not move the address.* The speaker is a DaemonSet, `drain --ignore-daemonsets`
+leaves it running, and a cordoned node goes on announcing quite happily. The address stayed put for
+as long as it was watched. Drain tests pod eviction; it says nothing about L2.
+
+*Deleting the speaker pod does not test it either.* The DaemonSet recreates the pod on the same node
+within a second or two, and the announcement comes back to where it started. A 1-second probe loop
+recorded zero failures — which looks like a flawless failover and is actually a failover that never
+happened.
+
+**Take the node away.** That is the failure this mechanism exists for, and the only test that
+exercises the client's ARP cache:
 
 ```bash
-# from the events above
-NODE=k8s-w2
-kubectl -n metallb-system delete pod \
-  "$(kubectl -n metallb-system get pods -o wide --no-headers \
-     | awk -v n="$NODE" '$1 ~ /^speaker/ && $7 == n {print $1}')"
+# from the NON-cluster machine, in one terminal
+while true; do printf '%s %s\n' "$(date +%s)" \
+  "$(curl -s -m1 -o /dev/null -w '%{http_code}' http://192.168.1.240)"; sleep 1; done
 ```
 
 ```bash
-# from the NON-cluster machine, in another terminal — expect a short gap, then 200s again
-while true; do curl -s -o /dev/null -w '%{http_code} ' http://192.168.1.240; sleep 1; done
+# then power off, or hard-stop, the node named in the nodeAssigned event
 ```
 
 ```bash
 kubectl describe svc lbtest | grep nodeAssigned | tail -1     # names the new node
+ip neigh show 192.168.1.240                                   # on the client: a different MAC now
 ```
 
-Recovery normally takes about ten seconds while the new leader gratuitously ARPs. A gap that never ends means the remaining speakers are not gossiping — check port 7946 between nodes.
+Measured on the verification run: probes failed at +1s, +3s and +5s after the node was stopped, and
+were back to `200` at +7s — **about a six-second outage**, with the client's ARP entry re-resolving
+to the new node's MAC. Budget ten seconds and treat anything much longer as a problem. A gap that
+never ends means the remaining speakers are not gossiping — check port 7946 between nodes.
 
-Powering the node off, or stopping kubelet on it, is the more faithful test still — it is the failure
-the mechanism exists for, and it also exercises the ARP cache on the client, which a pod deletion
-does not.
+Bring the node back and the address does **not** return to it; MetalLB has no preference for the
+original leader. Do not wait for that as a sign of recovery.
 
 Full drain semantics, including the PDB checks worth doing first, are in [[k8s-node-drain-replace]].
 
@@ -325,7 +342,7 @@ Pick per service, and if you choose `Local`, make sure the workload runs on ever
 - [ ] `kubectl describe svc` shows a `nodeAssigned` event naming the announcing node
 - [ ] `curl` to that IP **from a machine that is not a cluster node** returns the application
 - [ ] `ip neigh` on that machine shows the address `REACHABLE` at the announcing node's MAC
-- [ ] Removing the speaker from the announcing node moves the address; traffic recovers within ~15s
+- [ ] **Powering off** the announcing node moves the address; traffic recovers within ~10s (cordon, drain and pod deletion all fail to test this)
 - [ ] Every address in the pool is outside the DHCP range (re-check the router config, not memory)
 - [ ] The MetalLB version is recorded in this document's `env`
 
@@ -353,41 +370,92 @@ If kube-proxy was switched to `strictARP: true` in step 1 and you are removing M
 
 Stale ARP entries on client machines can outlive the removal — the address will appear reachable from a laptop that cached it. `ip neigh flush all` on the client, or wait out the cache.
 
-## What the EC2 run found
+## Where this bit us
 
-2026-08-08, on a three-node kubeadm cluster in one AWS subnet plus a fourth non-cluster machine on
-the same subnet. Everything up to the ARP boundary ran; these are the four things that were wrong.
+Two runs on 2026-08-08: the install path on three EC2 instances plus a fourth non-cluster machine on
+the same subnet, and the L2 mechanism on a three-node kind cluster on one bridge. Five findings, the
+first of which is the one to remember.
 
-**A `200` that proved nothing.** Curling the assigned VIP from a cluster node returned `200` from all
-three nodes — on a network where L2 announcement demonstrably does not work. kube-proxy answers for
-LoadBalancer addresses locally on every node. From the non-cluster machine the same request gave
-`curl` → `000` and `ip neigh` → `FAILED`, while a real node address on that subnet resolved to a MAC
-and answered normally, so the harness was fine and the mechanism was not. **The document previously
-warned only against testing from a pod**, which leaves the far more tempting mistake wide open.
-Section 4 now says which machine to use and shows the false positive.
+**A `200` that proves nothing.** Curling the assigned VIP from a cluster node returned `200` from
+every node — on the AWS network, where L2 announcement demonstrably cannot work at all. kube-proxy
+programs iptables rules for LoadBalancer addresses on every node, so the node answers itself and no
+ARP request is ever sent. The tell is an empty ARP table for an address you just talked to.
+Reproduced identically on kind, where the mechanism *does* work: `200` from the node with no ARP
+entry, `200` from the non-cluster client with the announcing node's MAC. **This document previously
+warned only against testing from a pod**, leaving the far more tempting mistake wide open.
 
-**Cordon and drain do not move the announcement.** The failover test as written cannot work: the
-speaker is a DaemonSet, `--ignore-daemonsets` keeps it alive, and a cordoned node goes on announcing.
-The address moved about 25 seconds after the speaker pod itself was deleted. Failover section
-rewritten.
+**Neither cordon+drain nor deleting the speaker tests failover.** Drain leaves the DaemonSet running
+and the cordoned node keeps announcing. Deleting the speaker pod gets it recreated on the same node
+in about a second, and a 1-second probe loop recorded zero failures — a perfect-looking failover that
+did not occur. Stopping the node produced the real thing: failures at +1s, +3s, +5s, back to `200` at
++7s, ARP re-resolved to the surviving node's MAC.
 
-**`avoidBuggyIPs` does not do what the comment said.** It skips addresses ending in `.0` and `.255`,
-not the ends of your range. With `…240-…250` the first service was assigned `…240`, not `…241`.
+**`avoidBuggyIPs` does not do what the comment claimed.** It skips addresses ending in `.0` and
+`.255`, not the ends of your range. With `…240-…250` the first service was assigned `…240`, not
+`…241` — on both platforms.
 
-**7946 is unopenable and uncheckable at the point the document asks for it.** No rule in any document
-here opened it, and nothing listens on it until step 2 installs the speaker, so the prerequisite as
-written fails whether or not the firewall is right. Prerequisites section now distinguishes the rule
-from the check.
+**7946 is neither opened nor checkable where the document asked.** No document in this set opened it,
+and nothing listens on it until step 2 installs the speaker, so the prerequisite as written fails
+whether or not the firewall is correct. The two failure modes at least look different: filtered
+hangs, open-with-nothing-behind-it gives `Connection refused` immediately.
 
-Smaller: `kube-proxy`'s configmap reports `mode: ""` rather than `iptables` on 1.31.
+**The address does not come back.** When the stopped node returned, the announcement stayed on its
+replacement. Fine, but not what "recovery" looks like if you are waiting for the original.
+
+Smaller: `kube-proxy`'s configmap reports `mode: ""` on a kubeadm 1.31 cluster rather than the word
+`iptables`.
+
+## Rehearsing this without hardware
+
+L2 mode needs a real broadcast domain, so where you rehearse it decides whether the rehearsal means
+anything.
+
+| Environment | Install path | ARP, announcement, failover |
+|---|---|---|
+| Cloud VM subnet (AWS VPC, and equivalents) | works | **impossible** — the fabric filters on IP and does not forward ARP for an unowned address |
+| Containers on one bridge (kind, k3d, plain Docker) | works | works — the bridge is a genuine L2 segment |
+| VMs on one bridged network (libvirt, Proxmox, nested) | works | works, and closest to the target |
+| The actual LAN | works | works, and is the only place `verified` should eventually come from |
+
+The kind cluster used here, for anyone repeating it:
+
+```yaml
+# kind-cluster.yaml — same shape as the on-prem cluster: one control plane, two workers
+kind: Cluster
+apiVersion: kind.x-k8s.io/v1alpha4
+name: metallb-l2
+nodes:
+  - role: control-plane
+  - role: worker
+  - role: worker
+```
+
+```bash
+kind create cluster --config kind-cluster.yaml
+docker network inspect kind --format '{{range .IPAM.Config}}{{.Subnet}}{{end}}'
+```
+
+Take the pool from that subnet, outside the range the container runtime hands out — `…240-…250` of a
+`/24` works — and then follow this document from step 1 unchanged.
+
+The non-cluster machine is one more container on the same network:
+
+```bash
+docker run -d --name lanclient --network kind nicolaka/netshoot sleep 3600
+docker exec lanclient ip neigh show <LB_IP>
+```
+
+Two divergences to keep in mind: kind ships kindnet rather than Calico, and its Kubernetes version
+tracks the kind release rather than yours. Neither touches the ARP path, which is handled by the
+speaker and kube-proxy, but neither is your cluster either.
 
 ## Failure points documented upstream
 
-These come from the MetalLB documentation and its issue tracker, and were not reached on the run above.
+These come from the MetalLB documentation and its issue tracker, and were not hit on either run above.
 
 **Pool overlapping DHCP** — the failure lands on a random laptop, not on the cluster, and nothing in `kubectl` shows it. The prerequisite scan is the only cheap defence. ([MetalLB — L2 mode](https://metallb.universe.tf/concepts/layer2/))
 
-**IPVS without strictARP** — kube-proxy answers ARP for the service address, announcements go to the wrong node, and reachability becomes intermittent depending on which reply the client caches. Step 1. ([Installation — preparation](https://metallb.universe.tf/installation/#preparation))
+**IPVS without strictARP** — kube-proxy answers ARP for the service address, announcements go to the wrong node, and reachability becomes intermittent depending on which reply the client caches. Step 1. Both verification clusters ran iptables mode, so this stayed untested. ([Installation — preparation](https://metallb.universe.tf/installation/#preparation))
 
 **Applying the pool before the webhook is ready** — `Internal error occurred: failed calling webhook`. Not a configuration error; wait for the controller rollout and re-apply. Step 2.
 
@@ -399,7 +467,7 @@ These come from the MetalLB documentation and its issue tracker, and were not re
 
 ## Follow-ups
 
-- [ ] Run this where L2 can actually work — hardware, a home lab, or VMs on one bridge — and only then set `verified`. A cloud VPC cannot verify it; the install path is already done 📅 2026-09-30
+- [ ] Run this on the real LAN. Containers on one bridge proved the mechanism, but not a real switch, a real DHCP server to collide with, or `strictARP` under IPVS 📅 2026-09-30
 - [ ] Record the reserved LAN range in the network documentation, not only in the manifest
 - [ ] Put an ingress controller on a single LoadBalancer address, with everything else behind it on ClusterIP — cheaper than an address per service. Procedure drafted in [[ingress-nginx-onprem]], still unverified
 - [ ] Revisit BGP mode if any single service outgrows one node's bandwidth
