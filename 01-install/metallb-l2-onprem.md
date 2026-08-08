@@ -4,17 +4,28 @@ date: 2026-08-07
 domain: install
 tags: [on-prem, bare-metal, networking]
 stack: [kubernetes, metallb, kubectl, calico]
-summary: Hand out LAN addresses to LoadBalancer services on hardware you own, using MetalLB in L2 mode. The address pool and kube-proxy's ARP setting decide whether this works or takes down a neighbouring host.
+summary: Hand out LAN addresses to LoadBalancer services on hardware you own, using MetalLB in L2 mode. Testing it from a cluster node returns 200 whether or not the mechanism works — kube-proxy answers locally, and the ARP table is the only honest check.
 source: handson
-env: Target — Kubernetes 1.31 (kubeadm, on-prem) · MetalLB 0.14 · Calico 3.28 · Ubuntu 24.04 LTS
+env: Kubernetes 1.31.14 (kubeadm) · MetalLB 0.14.8 · Calico 3.28.2 · Ubuntu 24.04.4 LTS — install path exercised on AWS EC2 2026-08-08; L2 announcement cannot be exercised there
 verified:
 duration: 20–30 min
 risk: medium
 ---
 
-> ⚠️ **This procedure has not been executed in this environment yet.** It is assembled from upstream
-> MetalLB documentation, so `verified` is empty and the site lists it as needing verification. Run it
-> once on the real cluster, then fill in `verified` and correct whatever was wrong.
+> ⚠️ **`verified` is deliberately still empty.** On 2026-08-08 this was run end to end on a
+> three-node EC2 cluster, and the install path — CRDs, pool, advertisement, address assignment,
+> leader election — worked and has been corrected where it was wrong. But **the thing this document
+> is actually about, answering ARP on a LAN, cannot be exercised on a cloud VPC at all**, so the
+> checks that matter most are still unproven. Marking it verified on the strength of the parts that
+> did run would be the more dishonest option.
+>
+> What was proven not to work there, so nobody repeats the attempt: an AWS VPC does not deliver
+> traffic to an address that is not assigned to an ENI, and does not forward ARP for one. From a LAN
+> machine outside the cluster, the assigned VIP gives `curl` → `000` and `ip neigh` → `FAILED`, while
+> a real node address on the same subnet resolves to a MAC and answers normally. Rehearse this on
+> hardware, a home lab, or nested VMs on one bridge — not on a cloud.
+>
+> Four corrections did come out of the run. See [What the EC2 run found](#what-the-ec2-run-found).
 
 On a cloud provider, `type: LoadBalancer` calls an API and an address appears. On your own hardware nothing answers that call, so the service sits at `<pending>` forever. MetalLB is the thing that answers it.
 
@@ -41,7 +52,20 @@ So it is **failover, not load balancing.** A single service's inbound traffic is
 | Working cluster | `kubectl get nodes` | all nodes `Ready` |
 | CNI running | `kubectl -n calico-system get pods` | all `Running` |
 | Free addresses on the node LAN | see below | a contiguous range nobody else owns |
-| Node-to-node traffic on 7946 | `nc -zv <W1_IP> 7946` | open (speakers gossip over memberlist) |
+| Firewall permits 7946/tcp **and** 7946/udp between nodes | firewall config, not a port check | allowed |
+
+**7946 cannot be checked before installing.** Nothing listens on it until the speaker DaemonSet is
+running, so `nc -zv <W1_IP> 7946` fails at this point no matter how the firewall is set — and the two
+failures look different in a way worth knowing: a filtered port hangs until timeout, an open port
+with nothing behind it returns `Connection refused` immediately. Confirm the *rule* here, and check
+the *port* after step 2. Neither this document nor [[onprem-3node-kubeadm-ubuntu]] previously said to
+open it, and memberlist needs both protocols:
+
+```bash
+# on every node, if ufw is active
+sudo ufw allow 7946/tcp
+sudo ufw allow 7946/udp
+```
 
 ### Reserve the address range first — before touching the cluster
 
@@ -80,7 +104,9 @@ Check which mode you are in:
 kubectl -n kube-system get configmap kube-proxy -o yaml | grep -E '^\s+mode:'
 ```
 
-A kubeadm cluster defaults to iptables mode, where this setting is not required. If the value is `ipvs`, set it:
+On a kubeadm 1.31 cluster this prints `mode: ""` — an empty string, not the word `iptables`. Empty
+means "the default", which is iptables, and this setting is not required. Only a literal `ipvs` calls
+for the change below; do not read the blank as a missing value and go looking for it.
 
 ```bash
 kubectl -n kube-system get configmap kube-proxy -o yaml | \
@@ -136,8 +162,9 @@ spec:
   addresses:
     - 192.168.1.240-192.168.1.250     # <LB_RANGE> — must be free and outside DHCP
   autoAssign: true
-  # Skips .240 and .250 (network/broadcast-style addresses in some setups).
-  # Leave false unless you know your gear is fine with them.
+  # Skips addresses ending in .0 and .255 only. It does NOT reserve the ends of
+  # your range — with the range above, the first service gets .240. Harmless to
+  # leave on; just do not count on it holding anything back.
   avoidBuggyIPs: true
 ---
 apiVersion: metallb.io/v1beta1
@@ -184,45 +211,89 @@ kubectl describe svc lbtest | tail -20
 kubectl -n metallb-system logs deployment/controller --tail=50
 ```
 
-Find which node took the announcement:
+Find which node took the announcement. The service's own events say it in one line, and unlike a log
+grep they do not change shape between releases:
+
+```bash
+kubectl describe svc lbtest | grep -E 'IPAllocated|nodeAssigned'
+```
+
+```
+Normal  IPAllocated   metallb-controller  Assigned IP ["192.168.1.240"]
+Normal  nodeAssigned  metallb-speaker     announcing from node "k8s-w2" with protocol "layer2"
+```
+
+The speaker logs carry the same information in JSON, if you want the timestamps:
 
 ```bash
 kubectl -n metallb-system logs -l component=speaker --tail=200 | grep -i 'assigned\|announcing'
 ```
 
-Now the actual test — **from a machine on the LAN, not from inside the cluster.** Curling from a pod proves nothing here; it never touches ARP.
+### The test has to come from a machine that is not a cluster node
+
+**Not from a pod, and not from a node either.** The pod case is obvious — it never touches ARP. The
+node case is the trap: kube-proxy programs iptables rules for the LoadBalancer address on *every*
+node, so a node curling the VIP is answered by its own local DNAT. You get a clean `200` with no ARP
+request ever leaving the machine, and it tells you nothing about whether L2 works.
+
+That is a genuinely misleading pass — on the EC2 run it returned `200` from all three nodes on a
+network where the mechanism is fundamentally incapable of working. The tell is that `ip neigh`
+holds no entry for an address you supposedly just talked to:
 
 ```bash
-# from your workstation
-curl -s -o /dev/null -w '%{http_code}\n' http://192.168.1.241
+# on a cluster node — 200, and no ARP entry. This is the false positive.
+curl -s -o /dev/null -w '%{http_code}\n' http://192.168.1.240
+ip neigh show 192.168.1.240
+```
+
+Use a workstation, a laptop, or any other host on the same segment that is not part of the cluster:
+
+```bash
+# from a NON-cluster machine on the LAN
+curl -s -o /dev/null -w '%{http_code}\n' http://192.168.1.240
 ```
 
 ```bash
-arp -n | grep 192.168.1.241
+ip neigh show 192.168.1.240      # or: arp -n | grep 192.168.1.240
 ```
 
-The MAC address in that ARP entry belongs to the announcing node. That is the whole mechanism, visible in one line.
+`REACHABLE` with a MAC address that belongs to the announcing node is the whole mechanism, visible in
+one line. `FAILED`, or no entry, means nothing answered the ARP request — the announcement is not
+reaching the segment.
 
 ### Failover test
 
 The reason to run L2 mode at all is that it survives losing a node. Verify it rather than assuming it.
 
+**Cordon and drain do not move the announcement.** This was the plan here and it does not work: the
+speaker is a DaemonSet, `drain --ignore-daemonsets` leaves it running, and a cordoned node keeps
+announcing. Verified on 2026-08-08 — the address stayed on the drained node for as long as it was
+watched, and moved within about 25 seconds of the speaker actually going away.
+
+So drain tests pod eviction, not L2 failover. To test failover, take the speaker off the node:
+
 ```bash
-# note the announcing node from the speaker logs above, then cordon and drain it
-kubectl cordon <ANNOUNCING_NODE>
-kubectl drain <ANNOUNCING_NODE> --ignore-daemonsets --delete-emptydir-data
+# from the events above
+NODE=k8s-w2
+kubectl -n metallb-system delete pod \
+  "$(kubectl -n metallb-system get pods -o wide --no-headers \
+     | awk -v n="$NODE" '$1 ~ /^speaker/ && $7 == n {print $1}')"
 ```
 
 ```bash
-# from the workstation, in another terminal — expect a short gap, then 200s again
-while true; do curl -s -o /dev/null -w '%{http_code} ' http://192.168.1.241; sleep 1; done
+# from the NON-cluster machine, in another terminal — expect a short gap, then 200s again
+while true; do curl -s -o /dev/null -w '%{http_code} ' http://192.168.1.240; sleep 1; done
+```
+
+```bash
+kubectl describe svc lbtest | grep nodeAssigned | tail -1     # names the new node
 ```
 
 Recovery normally takes about ten seconds while the new leader gratuitously ARPs. A gap that never ends means the remaining speakers are not gossiping — check port 7946 between nodes.
 
-```bash
-kubectl uncordon <ANNOUNCING_NODE>
-```
+Powering the node off, or stopping kubelet on it, is the more faithful test still — it is the failure
+the mechanism exists for, and it also exercises the ARP cache on the client, which a pod deletion
+does not.
 
 Full drain semantics, including the PDB checks worth doing first, are in [[k8s-node-drain-replace]].
 
@@ -251,11 +322,15 @@ Pick per service, and if you choose `Local`, make sure the workload runs on ever
 - [ ] `kubectl -n metallb-system get ipaddresspool` — the pool exists with the intended range
 - [ ] `kubectl -n metallb-system get l2advertisement` — an advertisement references the pool
 - [ ] A `type: LoadBalancer` service gets an `EXTERNAL-IP` within seconds
-- [ ] `curl` to that IP **from outside the cluster** returns the application
-- [ ] `arp -n` shows the address resolving to the announcing node's MAC
-- [ ] Draining the announcing node moves the address; traffic recovers within ~15s
+- [ ] `kubectl describe svc` shows a `nodeAssigned` event naming the announcing node
+- [ ] `curl` to that IP **from a machine that is not a cluster node** returns the application
+- [ ] `ip neigh` on that machine shows the address `REACHABLE` at the announcing node's MAC
+- [ ] Removing the speaker from the announcing node moves the address; traffic recovers within ~15s
 - [ ] Every address in the pool is outside the DHCP range (re-check the router config, not memory)
 - [ ] The MetalLB version is recorded in this document's `env`
+
+The two ARP lines are the ones that decide whether L2 mode works. Everything above them passes on a
+network where it cannot possibly function — that is not hypothetical, it is what happened on EC2.
 
 ## Rollback
 
@@ -278,9 +353,37 @@ If kube-proxy was switched to `strictARP: true` in step 1 and you are removing M
 
 Stale ARP entries on client machines can outlive the removal — the address will appear reachable from a laptop that cached it. `ip neigh flush all` on the client, or wait out the cache.
 
+## What the EC2 run found
+
+2026-08-08, on a three-node kubeadm cluster in one AWS subnet plus a fourth non-cluster machine on
+the same subnet. Everything up to the ARP boundary ran; these are the four things that were wrong.
+
+**A `200` that proved nothing.** Curling the assigned VIP from a cluster node returned `200` from all
+three nodes — on a network where L2 announcement demonstrably does not work. kube-proxy answers for
+LoadBalancer addresses locally on every node. From the non-cluster machine the same request gave
+`curl` → `000` and `ip neigh` → `FAILED`, while a real node address on that subnet resolved to a MAC
+and answered normally, so the harness was fine and the mechanism was not. **The document previously
+warned only against testing from a pod**, which leaves the far more tempting mistake wide open.
+Section 4 now says which machine to use and shows the false positive.
+
+**Cordon and drain do not move the announcement.** The failover test as written cannot work: the
+speaker is a DaemonSet, `--ignore-daemonsets` keeps it alive, and a cordoned node goes on announcing.
+The address moved about 25 seconds after the speaker pod itself was deleted. Failover section
+rewritten.
+
+**`avoidBuggyIPs` does not do what the comment said.** It skips addresses ending in `.0` and `.255`,
+not the ends of your range. With `…240-…250` the first service was assigned `…240`, not `…241`.
+
+**7946 is unopenable and uncheckable at the point the document asks for it.** No rule in any document
+here opened it, and nothing listens on it until step 2 installs the speaker, so the prerequisite as
+written fails whether or not the firewall is right. Prerequisites section now distinguishes the rule
+from the check.
+
+Smaller: `kube-proxy`'s configmap reports `mode: ""` rather than `iptables` on 1.31.
+
 ## Failure points documented upstream
 
-**This is not "where this bit us" — nobody has run this here yet.** These come from the MetalLB documentation and its issue tracker. Replace them with what actually happened on your first run.
+These come from the MetalLB documentation and its issue tracker, and were not reached on the run above.
 
 **Pool overlapping DHCP** — the failure lands on a random laptop, not on the cluster, and nothing in `kubectl` shows it. The prerequisite scan is the only cheap defence. ([MetalLB — L2 mode](https://metallb.universe.tf/concepts/layer2/))
 
@@ -296,7 +399,7 @@ Stale ARP entries on client machines can outlive the removal — the address wil
 
 ## Follow-ups
 
-- [ ] Run this on the real cluster, correct it, and set `verified`
+- [ ] Run this where L2 can actually work — hardware, a home lab, or VMs on one bridge — and only then set `verified`. A cloud VPC cannot verify it; the install path is already done 📅 2026-09-30
 - [ ] Record the reserved LAN range in the network documentation, not only in the manifest
 - [ ] Put an ingress controller on a single LoadBalancer address, with everything else behind it on ClusterIP — cheaper than an address per service. Procedure drafted in [[ingress-nginx-onprem]], still unverified
 - [ ] Revisit BGP mode if any single service outgrows one node's bandwidth
