@@ -395,3 +395,4 @@ These come from the ingress-nginx and MetalLB documentation, and were not hit on
 [[argocd-helm-ha-install]] — the first real candidate to move behind this, and the source of the gRPC trap above.
 [[2026-08-07-gateway-api]] — where this layer is heading, and worth reading before standardising on ingress-nginx.
 [[pod-crashloopbackoff]] — if the controller pods will not start.
+[[metallb-pin-loadbalancer-ip]] — the same `metallb.io/loadBalancerIPs` annotation as step 1, generalized to any LoadBalancer service. Unverified; this document is the closest confirmation it has.

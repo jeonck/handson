@@ -478,3 +478,4 @@ These come from the MetalLB documentation and its issue tracker, and were not hi
 [[k8s-node-drain-replace]] — the drain used in the failover test, with the pre-checks that matter on a live cluster.
 [[argocd-helm-ha-install]] — its ingress assumes something already answers for an external address. On-prem, that something is this.
 [[pod-crashloopbackoff]] — if the speaker or controller pods will not start.
+[[metallb-pin-loadbalancer-ip]] — pins a fixed address from the pool set up here onto any `type: LoadBalancer` service, not only the ingress controller. Unverified.
