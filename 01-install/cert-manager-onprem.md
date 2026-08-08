@@ -8,6 +8,8 @@ summary: Issue and renew TLS certificates automatically on a cluster whose hostn
 source: handson
 env: Kubernetes 1.31.6 · cert-manager 1.16.2 · ingress-nginx chart 4.11.3 · MetalLB 0.14.8 · Helm 4.2.3 — Path A run on a three-node kind cluster on one bridge; Path B not run
 verified: 2026-08-08
+verifiability: partial
+verifiability-note: Path A (internal CA) verified. Path B (Let's Encrypt over DNS-01) needs a public zone and a provider token, and has not been run.
 duration: 30–50 min
 risk: medium
 ---

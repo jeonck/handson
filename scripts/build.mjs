@@ -19,6 +19,7 @@ const DIST = path.join(ROOT, "dist");
 const config = JSON.parse(await readFile(path.join(ROOT, "site.config.json"), "utf8"));
 const VAULT_DIRS = Object.keys(config.folders);
 const STALE_DAYS = config.staleDays || 120;
+const VERIFIABILITY = ["lab", "partial", "field"];
 
 /* ---------- frontmatter ---------- */
 
@@ -118,7 +119,13 @@ function extractTasks(body) {
     const due = text.match(/📅\s*(\d{4}-\d{2}-\d{2})/);
     tasks.push({
       done: m[1].toLowerCase() === "x",
-      text: text.replace(/📅\s*\d{4}-\d{2}-\d{2}/, "").replace(/`/g, "").trim(),
+      // Wikilink syntax is markup, not content — a follow-up quoted from another document
+      // otherwise reaches the dashboard as a literal "[[k8s-node-drain-replace]]".
+      text: text
+        .replace(/📅\s*\d{4}-\d{2}-\d{2}/, "")
+        .replace(/\[\[([^\]|#]+)(?:[#|]([^\]]*))?\]\]/g, (_a, target, alias) => (alias || target).trim())
+        .replace(/`/g, "")
+        .trim(),
       due: due ? due[1] : null,
       kind: followup ? "followup" : "checklist",
     });
@@ -195,6 +202,14 @@ for (const dir of VAULT_DIRS) {
       source: data.source || "",
       env: data.env || "",
       verified: data.verified || "",
+      // What stands between this document and a full verification.
+      // lab (default) = a throwaway lab settles it; partial = it ran, but a named part could not be
+      // exercised where it ran; field = no lab can settle it (real hardware, real time, a second
+      // cluster, a real outage). The prose already said this; this makes the site able to read it.
+      verifiability: VERIFIABILITY.includes((data.verifiability || "").toLowerCase())
+        ? data.verifiability.toLowerCase()
+        : "lab",
+      verifiabilityNote: data["verifiability-note"] || "",
       duration: data.duration || "",
       risk: (data.risk || "").toLowerCase(),
       links: extractWikilinks(body),
@@ -310,11 +325,27 @@ const freshness = notes
     title: n.title,
     domain: n.domain,
     verified: n.verified || null,
+    verifiability: n.verifiability,
     ageDays: n.verified ? dayGap(n.verified) : null,
   }))
   .sort((a, b) => (b.ageDays ?? 1e6) - (a.ageDays ?? 1e6));
 
 const stale = freshness.filter((f) => f.ageDays === null || f.ageDays > STALE_DAYS);
+
+// Documents whose verification is bounded by something other than effort. A `field` document is not
+// cleared by re-running the lab, and a `partial` one is verified with a named hole in it — neither
+// fact survives being collapsed into a date, which is why they get their own axis.
+const gaps = notes
+  .filter((n) => n.verifiability !== "lab")
+  .map((n) => ({
+    slug: n.slug,
+    title: n.title,
+    domain: n.domain,
+    verifiability: n.verifiability,
+    note: n.verifiabilityNote,
+    verified: n.verified || null,
+  }))
+  .sort((a, b) => (a.verifiability === b.verifiability ? 0 : a.verifiability === "field" ? -1 : 1));
 
 const stats = {
   notes: notes.length,
@@ -325,6 +356,8 @@ const stats = {
   stacks: new Set(notes.flatMap((n) => n.stack)).size,
   procedural: freshness.length,
   stale: stale.length,
+  gaps: gaps.length,
+  gapList: gaps,
   tasksOpen: followups.filter((t) => !t.done).length,
   tasksDone: followups.filter((t) => t.done).length,
   checklistItems: checklists.length,
@@ -386,6 +419,7 @@ const index = {
     words: n.words,
     commands: n.commands,
     verified: n.verified,
+    verifiability: n.verifiability,
     duration: n.duration,
     risk: n.risk,
     tasksOpen: n.tasks.filter((t) => !t.done && t.kind === "followup").length,
@@ -420,6 +454,8 @@ for (const n of notes) {
       source: n.source,
       env: n.env,
       verified: n.verified,
+      verifiability: n.verifiability,
+      verifiabilityNote: n.verifiabilityNote,
       duration: n.duration,
       risk: n.risk,
       words: n.words,
@@ -437,6 +473,6 @@ await cp(path.join(DIST, "index.html"), path.join(DIST, "404.html"));
 await writeFile(path.join(DIST, ".nojekyll"), "");
 
 console.log(
-  `built ${notes.length} docs · ${stats.commands} commands · ${edges.length} links · ${stats.stale} stale · ${index.stacks.length} stacks`
+  `built ${notes.length} docs · ${stats.commands} commands · ${edges.length} links · ${stats.stale} stale · ${stats.gaps} with verification gaps · ${index.stacks.length} stacks`
 );
 if (missing.size) console.log(`  unresolved wikilinks: ${[...missing].join(", ")}`);

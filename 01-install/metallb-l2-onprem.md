@@ -8,6 +8,8 @@ summary: Hand out LAN addresses to LoadBalancer services on hardware you own, us
 source: handson
 env: MetalLB 0.14.8 · install path on Kubernetes 1.31.14 (kubeadm/Calico 3.28.2/Ubuntu 24.04.4, AWS EC2) · L2 announcement and failover on Kubernetes 1.32.2 (kind 0.27 on podman, kindnet, one bridge) — not yet on bare metal
 verified: 2026-08-08
+verifiability: partial
+verifiability-note: Install path on EC2, L2 announcement and failover on a kind bridge. Never on bare metal with a real switch — and a cloud VPC cannot host L2 mode at all.
 duration: 20–30 min
 risk: medium
 ---

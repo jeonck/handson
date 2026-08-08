@@ -8,6 +8,8 @@ summary: Point Longhorn at S3 or NFS storage that lives outside the cluster, sch
 source: handson
 env: Target — Kubernetes 1.31 (kubeadm, on-prem) · Longhorn 1.7 · MinIO or NFSv4 off-cluster · Ubuntu 24.04 LTS
 verified:
+verifiability: field
+verifiability-note: The property is surviving the loss of the cluster — it needs a second cluster to restore into, and retention only proves itself after retain+1 scheduled runs.
 duration: 30–45 min
 risk: medium
 ---

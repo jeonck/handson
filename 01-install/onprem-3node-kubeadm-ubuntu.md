@@ -8,6 +8,8 @@ summary: Build a three-machine cluster on your own hardware — OS prep, contain
 source: handson
 env: Ubuntu 24.04.4 LTS · Kubernetes 1.31.14 (kubeadm) · containerd 2.2.1 · Calico 3.28.2 — run on 3× AWS EC2 t3.medium, not on bare metal
 verified: 2026-08-08
+verifiability: partial
+verifiability-note: Ran on EC2. Real NIC and driver behaviour, disabling swap, cloned product_uuid collisions, and ufw rules stay unproven on hardware.
 duration: 60–90 min
 risk: medium
 ---

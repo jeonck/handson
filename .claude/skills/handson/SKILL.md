@@ -55,12 +55,16 @@ summary: <one sentence. It appears verbatim on the site card, so make it a compl
 source: handson
 env: <the environment it was verified on, with versions. e.g. Kubernetes 1.31 (EKS) · Helm 3.16>
 verified: <the day it actually ran. Leave empty if the input gives no basis — never guess>
+verifiability: <omit or `lab` when a throwaway lab settles it; `partial`; or `field`>
+verifiability-note: <required unless lab — one line naming what blocks a full verification>
 duration: <how long it actually took>
 risk: low | medium | high
 ---
 ```
 
 `risk`: `low` = easy to undo, no production impact / `medium` = can affect service, rollback exists / `high` = contains a step that cannot be undone.
+
+`verifiability` answers a different question from `verified`: not *has it run* but *can it be settled here at all*. Use `partial` when the run had a named hole in it — a substitute environment, a path not taken — and `field` when no lab can close it, because the property needs real hardware, real elapsed time, a second cluster, or a real outage. Both demand a `verifiability-note` naming the blocker in one line. Leaving a `field` document unmarked files it under "nobody got round to it", which is how it stays there.
 
 `env` and `verified` **are the credibility of a hands-on document.** The site dashboard uses them to pick what needs re-verification. If the input does not establish them, leave them empty and say so in your report. Do not invent them.
 
@@ -105,3 +109,4 @@ Before writing a new file, **look for an existing document covering the same tar
 - **Anything routed to inbox because classification was unclear** — state it so the user can move it later
 - **Whether anything was masked** — location and kind only, never re-print the value
 - Documents where you could not fill `verified` or `env` — the user has to supply those
+- **Anything you marked `partial` or `field`, and why** — say plainly what would have to exist before it could be verified

@@ -36,6 +36,8 @@ summary: One-line summary. Appears verbatim on the site card.
 source: handson          # handson | daily-topic | weekly-review | standardize
 env: Kubernetes 1.31 (EKS) · Helm 3.16
 verified: 2026-08-07     # the day this procedure actually ran
+verifiability: partial   # lab (default, omit) | partial | field
+verifiability-note: Ran on EC2; real NIC behaviour and ufw stay unproven.
 duration: 40–60 min
 risk: medium             # low | medium | high
 ---
@@ -48,6 +50,7 @@ Rules:
 - `stack` holds lowercase kebab-case tool names. The site's stack axis and search use it.
 - **`verified` is only ever a day it actually ran.** Never guess. If that value is false, every freshness number on the site is meaningless. With no basis, leave it empty.
 - **When it ran somewhere other than what the document targets, `env` says so.** A procedure for bare metal proven on EC2, or a LAN mechanism proven on a container bridge, is verified — of a substitute. Name the substitute and what it could not exercise; a date alone implies more than was tested. If only part of the document ran, `verified` still takes the date and the banner names the part that did not.
+- **`verifiability` separates "not done yet" from "cannot be done here."** Omit it (or use `lab`) when a throwaway lab settles the document end to end. Use `partial` when it ran with a named part it could not exercise, and `field` when no lab settles it at all — the property needs real hardware, real elapsed time, a second cluster, or a real outage. Anything other than `lab` requires a one-line `verifiability-note` naming the blocker, which the site shows verbatim. Without this axis a `field` document sits in the re-verification list looking like laziness, and the unproven half of a `partial` one is invisible behind a date.
 - `risk`: `low` = easy to undo, no production impact / `medium` = can affect service, rollback exists / `high` = includes a step that cannot be undone.
 - Dates are always absolute `YYYY-MM-DD`. No relative expressions like "last week".
 - Follow-ups go under a `## Follow-ups` heading as `- [ ] text 📅 YYYY-MM-DD` — that heading is what makes the site count them as open work rather than as a verification checklist.

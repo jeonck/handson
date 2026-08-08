@@ -8,6 +8,8 @@ summary: Turn the disks already in your nodes into replicated PersistentVolumes,
 source: handson
 env: Kubernetes 1.31.14 (kubeadm) · Longhorn 1.7.2 · Helm 3.21 · Ubuntu 24.04.4 LTS · containerd 2.2.1 — run on 3× AWS EC2 t3.medium with a 20 GB EBS data disk each, not on bare metal
 verified: 2026-08-08
+verifiability: partial
+verifiability-note: Ran on EC2 with EBS data disks. Real disk controllers, and a multipathd that is genuinely in use, stay unproven.
 duration: 30–45 min
 risk: medium
 ---

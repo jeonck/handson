@@ -60,6 +60,22 @@ function verifiedBadge(v) {
   return `<span class="verified ${cls}" title="Last verified ${v}">✓ ${label}</span>`;
 }
 
+// A second axis next to `verified`: not "has it run" but "can it be settled at all".
+// `field` never clears by re-running the lab, and `partial` is a verified document with a
+// named hole in it. Collapsing either into a date is what made both invisible.
+const VERIFIABILITY_LABEL = {
+  partial: "partly unproven",
+  field: "needs the field",
+};
+const VERIFIABILITY_TITLE = {
+  partial: "Verified, with a named part that could not be exercised where it ran",
+  field: "No lab settles this — it needs real hardware, real time, or a second cluster",
+};
+const gapBadge = (v) =>
+  v && v !== "lab"
+    ? `<span class="gap ${esc(v)}" title="${esc(VERIFIABILITY_TITLE[v] || "")}">${esc(VERIFIABILITY_LABEL[v] || v)}</span>`
+    : "";
+
 const RISK_LABEL = { low: "low risk", medium: "medium risk", high: "high risk" };
 
 const ghBase = () => `https://github.com/${DB.config.owner}/${DB.config.repo}`;
@@ -81,6 +97,7 @@ function noteCard(n) {
       ${n.stack.slice(0, 4).map((t) => `<span class="pill stack">${esc(t)}</span>`).join("")}
       ${n.commands ? `<span class="pill">${n.commands} cmd</span>` : ""}
       ${PROCEDURAL.includes(n.domain) ? verifiedBadge(n.verified) : ""}
+      ${gapBadge(n.verifiability)}
     </span>
   </a>`;
 }
@@ -130,6 +147,7 @@ function viewDashboard() {
       (f) => `<a class="fresh" href="#/note/${encodeURIComponent(f.slug)}">
         <span class="domain ${domainClass(f.domain)}">${esc(domainLabel(f.domain))}</span>
         <span class="t">${esc(f.title)}</span>
+        ${gapBadge(f.verifiability)}
         <span class="age ${f.ageDays === null ? "verified none" : "verified stale"}">${
           f.ageDays === null ? "unverified" : `${f.ageDays}d ago`
         }</span>
@@ -148,7 +166,7 @@ function viewDashboard() {
   <div class="stats">
     <div class="stat accent"><div class="n">${s.notes}</div><div class="l">docs</div><div class="sub">${s.words.toLocaleString()} words</div></div>
     <div class="stat"><div class="n">${s.commands}</div><div class="l">commands recorded</div><div class="sub">lines you can actually run</div></div>
-    <div class="stat ${s.stale ? "alert" : ""}"><div class="n">${s.stale}</div><div class="l">need re-verification</div><div class="sub">of ${s.procedural} procedures</div></div>
+    <div class="stat ${s.stale ? "alert" : ""}"><div class="n">${s.stale}</div><div class="l">need re-verification</div><div class="sub">of ${s.procedural} procedures · ${s.gaps} bounded by more than effort</div></div>
     <div class="stat"><div class="n">${s.tasksOpen}</div><div class="l">open follow-ups</div><div class="sub">${s.checklistItems} checklist items counted apart</div></div>
     <div class="stat"><div class="n">${s.stacks}</div><div class="l">stacks covered</div><div class="sub">${s.tags} tags</div></div>
   </div>
@@ -170,6 +188,26 @@ function viewDashboard() {
       ${tasks.length ? `<div class="tasklist">${tasks.map(taskRow).join("")}</div>` : `<p class="empty" style="color:var(--ink-3);font-size:12.5px;margin:0">No open follow-ups.</p>`}
     </div>
   </div>
+
+  ${
+    s.gapList.length
+      ? `<div class="section-head"><h2>Verification gaps</h2><span class="hint">what stands between these and a full verification</span></div>
+         <div class="gaplist">${s.gapList
+           .map(
+             (g) => `<a class="gaprow" href="#/note/${encodeURIComponent(g.slug)}">
+               <span class="gaphead">
+                 <span class="domain ${domainClass(g.domain)}">${esc(domainLabel(g.domain))}</span>
+                 <span class="t">${esc(g.title)}</span>
+                 ${gapBadge(g.verifiability)}
+                 <span class="age ${g.verified ? "verified" : "verified none"}">${g.verified ? "✓ " + g.verified : "unverified"}</span>
+               </span>
+               ${g.note ? `<span class="why">${esc(g.note)}</span>` : ""}
+             </a>`
+           )
+           .join("")}</div>
+         <p class="capture-note">A <b>partly unproven</b> document ran, with a named part it could not exercise. One that <b>needs the field</b> is not cleared by re-running the lab at all — re-reading it as "just not done yet" is how it stays undone.</p>`
+      : ""
+  }
 
   <div class="section-head"><h2>Writing rhythm</h2><span class="hint">last 12 weeks</span></div>
   <div class="panel">
@@ -349,6 +387,7 @@ async function viewNote(slug) {
         <div class="note-meta">
           <span class="pill">written ${n.date}</span>
           ${PROCEDURAL.includes(n.domain) ? verifiedBadge(n.verified) : ""}
+          ${gapBadge(n.verifiability)}
           ${n.commands ? `<span class="pill">${plural(n.commands, "command", "commands")}</span>` : ""}
           ${n.stack.map((t) => `<a class="pill stack" href="#/notes?stack=${encodeURIComponent(t)}">${esc(t)}</a>`).join("")}
           ${n.tags.map((t) => `<a class="pill tag" href="#/notes?tag=${encodeURIComponent(t)}">#${esc(t)}</a>`).join("")}
@@ -358,6 +397,13 @@ async function viewNote(slug) {
             ? `<dl class="envbox">${envCells
                 .map((c) => `<div><dt>${esc(c.k)}</dt><dd>${esc(c.v)}</dd></div>`)
                 .join("")}</dl>`
+            : ""
+        }
+        ${
+          n.verifiability && n.verifiability !== "lab"
+            ? `<p class="gapnote"><b>${esc(VERIFIABILITY_LABEL[n.verifiability] || n.verifiability)}</b> — ${esc(
+                n.verifiabilityNote || VERIFIABILITY_TITLE[n.verifiability] || ""
+              )}</p>`
             : ""
         }
       </header>

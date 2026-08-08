@@ -8,6 +8,8 @@ summary: Put one LoadBalancer address in front of every HTTP service instead of 
 source: handson
 env: Kubernetes 1.31.6 · ingress-nginx chart 4.11.3 (controller 1.11.3) · MetalLB 0.14.8 · Helm 4.2.3 — run on a three-node kind cluster on one bridge, not on bare metal
 verified: 2026-08-08
+verifiability: partial
+verifiability-note: Ran on a kind bridge. No real switch, no real DNS zone, and Local failover timing differs on machines that take longer to be declared dead.
 duration: 25–40 min
 risk: medium
 ---

@@ -8,6 +8,8 @@ summary:
 source: handson
 env: 
 verified: 
+verifiability:            # omit or `lab` if a throwaway lab settles it; else partial | field
+verifiability-note:       # required unless lab — one line naming the blocker
 duration: 
 risk: 
 ---
