@@ -309,7 +309,7 @@ If the IngressClass was default and another controller is expected to take over,
 ## Follow-ups
 
 - [ ] Run this on the real cluster, correct it, and set `verified`
-- [ ] Set up cert-manager with a DNS-01 solver or an internal CA — on-prem hosts cannot be validated over HTTP-01
+- [ ] Set up cert-manager with a DNS-01 solver or an internal CA — on-prem hosts cannot be validated over HTTP-01. Procedure drafted in [[cert-manager-onprem]], still unverified
 - [ ] Create the wildcard DNS record so hostnames work for everyone, not just workstations with an edited hosts file
 - [ ] Move Argo CD from its own LoadBalancer address to a host behind this controller, gRPC path included
 - [ ] Decide whether the controller should be a DaemonSet on a three-node cluster
