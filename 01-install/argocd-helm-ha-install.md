@@ -98,6 +98,11 @@ helm upgrade --install argocd argo/argo-cd \
 
 When `--wait` blows past 10 minutes it is almost always `redis-ha`. Fewer than three nodes, or a single zone, and anti-affinity cannot be satisfied, so the pods sit in Pending.
 
+**"Three nodes" means three *schedulable* nodes.** A three-machine cluster built by
+[[onprem-3node-kubeadm-ubuntu]] keeps a `NoSchedule` taint on the control plane, so it offers two —
+and this install hits the timeout above on hardware that looks like it should be enough. Count with
+[[schedulable-node-budget]] before running the command, not after the ten minutes are gone.
+
 ```bash
 kubectl -n argocd get pods -o wide
 kubectl -n argocd get events --sort-by=.lastTimestamp | tail -20

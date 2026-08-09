@@ -56,6 +56,12 @@ Assumes the cluster from [[onprem-3node-kubeadm-ubuntu]] — three nodes, Calico
 > do), or remove the control-plane taint and accept storage replication competing with etcd. Two
 > replicas still survives one node failure; it is a second failure *during a rebuild* that loses the
 > volume.
+>
+> **That second option is not free elsewhere.** The taint is decided in
+> [[onprem-3node-kubeadm-ubuntu]] section 6.1, which recommends keeping it on a 4 GB control plane,
+> and [[argocd-helm-ha-install]] wants three schedulable nodes for `redis-ha`. On three machines you
+> cannot keep the taint, run Longhorn at three replicas, and run Argo CD HA — pick two, or add a
+> machine. [[schedulable-node-budget]] is where that decision gets made once instead of per add-on.
 
 `environment_check.sh` in step 1.4 has the same blind spot — its pods do not tolerate the taint
 either, so it reports on two nodes and says nothing about the third. That is consistent with where

@@ -220,7 +220,13 @@ With `externalTrafficPolicy: Cluster` (the default), any node can receive the tr
 
 With `Local`, the client IP survives. The cost: traffic is only served by controller pods **on the node holding the address**. MetalLB understands this and only announces the address from nodes that have a ready endpoint, so it works — but if the controller has one replica and it is not on the announcing node, nothing answers.
 
-Which is why `replicaCount: 2` with a spread constraint is in the values above. Verify both facts:
+Which is why `replicaCount: 2` with a spread constraint is in the values above — and why the spread
+can only work if there are two schedulable nodes to spread across. On a three-machine cluster with
+the control-plane taint kept, two is exactly what you have, and there is no margin left for a node
+being drained. [[schedulable-node-budget]] covers counting that before the install rather than
+discovering it during one.
+
+Verify both facts:
 
 ```bash
 kubectl -n ingress-nginx get pods -o wide      # replicas on different nodes

@@ -1,7 +1,7 @@
 ---
 title: Assign a fixed IP to the ingress controller in a MetalLB environment
 date: 2026-08-08
-domain: inbox
+domain: archive
 tags: [metallb, ingress, load-balancer-ip]
 stack: [kubernetes, metallb, ingress-nginx]
 summary: A manual describing how to pin a LoadBalancer IP for an ingress controller under MetalLB, parked unverified because it arrived as copied documentation rather than an executed procedure.
@@ -11,6 +11,16 @@ verified:
 duration:
 risk: low
 ---
+
+> **Archived 2026-08-08, absorbed in two places.** The manual itself was promoted into
+> [[metallb-pin-loadbalancer-ip]], which generalises it from the ingress controller to any
+> `type: LoadBalancer` service and is likewise unrun. The specific case — pinning the ingress
+> controller's own address — is verified first-hand in [[ingress-nginx-onprem]] (2026-08-08,
+> three-node cluster), where the annotation applied on the first attempt and the failure modes this
+> manual only asserts are recorded as observations.
+>
+> Nothing here is left unabsorbed. Kept rather than deleted because it records where the text came
+> from and why it was never filed as a procedure.
 
 ## Why this is in the inbox, not install/runbook
 

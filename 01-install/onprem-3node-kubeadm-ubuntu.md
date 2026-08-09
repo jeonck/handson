@@ -439,6 +439,20 @@ kubectl taint nodes k8s-cp1 node-role.kubernetes.io/control-plane:NoSchedule-
 
 On a 4 GB control-plane node this is a bad trade: a memory-hungry pod evicting etcd takes the cluster down, not just the app. Leave the taint unless the hardware has room.
 
+> **Whichever you choose, this decision sizes every add-on you install later.** Keeping the taint
+> means three machines offer most components **two** places to put things, and the components that
+> care do not agree on how to complain about it: [[longhorn-storage-onprem]] quietly runs a volume
+> at fewer replicas than you asked for, forever, while [[argocd-helm-ha-install]]'s `redis-ha` sits
+> in `Pending` because anti-affinity needs three. Neither document can see this section, so the
+> count has to be carried forward by hand.
+>
+> Components with a control-plane toleration are unaffected — `calico-node` above, and
+> [[metallb-l2-onprem]]'s `speaker`, both run on all three. Which components tolerate the taint is
+> not visible from `kubectl get nodes`.
+>
+> [[schedulable-node-budget]] is the procedure for carrying the number forward. Run it before the
+> first add-on, not after one fails.
+
 ---
 
 ## 7. Reach the cluster from your workstation
