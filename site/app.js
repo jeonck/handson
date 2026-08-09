@@ -65,7 +65,7 @@ function verifiedBadge(v) {
 // named hole in it. Collapsing either into a date is what made both invisible.
 const VERIFIABILITY_LABEL = {
   partial: "partly unproven",
-  field: "needs the field",
+  field: "beyond the lab",
 };
 const VERIFIABILITY_TITLE = {
   partial: "Verified, with a named part that could not be exercised where it ran",
@@ -205,7 +205,7 @@ function viewDashboard() {
              </a>`
            )
            .join("")}</div>
-         <p class="capture-note">A <b>partly unproven</b> document ran, with a named part it could not exercise. One that <b>needs the field</b> is not cleared by re-running the lab at all — re-reading it as "just not done yet" is how it stays undone.</p>`
+         <p class="capture-note">A <b>partly unproven</b> document ran, with a named part it could not exercise. One that is <b>beyond the lab</b> is not cleared by re-running the lab at all — re-reading it as "just not done yet" is how it stays undone.</p>`
       : ""
   }
 
