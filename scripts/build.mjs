@@ -14,6 +14,11 @@ import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { marked } from "marked";
 import hljs from "highlight.js";
+import hcl from "./hcl-language.mjs";
+
+// highlight.js carries no HCL; this registers the hand-written grammar next to it so that
+// ```hcl / ```tf / ```terraform blocks colour like every other language on the site.
+hljs.registerLanguage("hcl", hcl);
 
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 const DIST = path.join(ROOT, "dist");
