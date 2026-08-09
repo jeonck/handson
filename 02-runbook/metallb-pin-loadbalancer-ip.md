@@ -38,8 +38,7 @@ Assumes MetalLB is installed and an `IPAddressPool` already exists — see [[met
 The old `spec.loadBalancerIP` field is deprecated; MetalLB reads the address from an annotation
 instead.
 
-```yaml
-# service.yaml
+```yaml title="service.yaml"
 apiVersion: v1
 kind: Service
 metadata:
@@ -64,8 +63,7 @@ kubectl apply -f service.yaml
 For a Helm-managed service (an ingress controller, for example), set the same annotation under its
 `service` values block rather than editing the rendered manifest:
 
-```yaml
-# values.yaml
+```yaml title="values.yaml"
 controller:
   service:
     type: LoadBalancer

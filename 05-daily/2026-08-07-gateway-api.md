@@ -75,8 +75,7 @@ kubectl get gatewayclass
 
 ### 4. Gateway and HTTPRoute
 
-```yaml
-# gw.yaml
+```yaml title="gw.yaml"
 apiVersion: gateway.networking.k8s.io/v1
 kind: Gateway
 metadata:

@@ -92,6 +92,7 @@ so at the point it appears.
 - Replace environment-specific values (host, account, region, ARN, IP) with `<PLACEHOLDER>` or a variable.
 - **Never keep credentials.** Tokens, passwords, and keys become `<REDACTED>`.
 - Tag code blocks with a language (`bash`, `yaml`). The site counts lines in `bash` blocks to tell a document you follow from a document you read.
+- **A block that is the contents of a named file carries its name in the fence**, not in a comment on line one: ```` ```yaml title="values-ingress.yaml" ````. The site renders the name as a header on the block. A filename written as a comment reads as part of the file and gets copied along with it.
 
 ## Skills
 

@@ -151,8 +151,7 @@ kubectl -n metallb-system get daemonset speaker
 
 Two objects: the pool of addresses, and the instruction to announce them over L2. Both are needed — a pool with no advertisement assigns addresses that nobody answers for, which looks exactly like a broken network.
 
-```yaml
-# metallb-pool.yaml
+```yaml title="metallb-pool.yaml"
 apiVersion: metallb.io/v1beta1
 kind: IPAddressPool
 metadata:
@@ -421,8 +420,8 @@ anything.
 
 The kind cluster used here, for anyone repeating it:
 
-```yaml
-# kind-cluster.yaml — same shape as the on-prem cluster: one control plane, two workers
+```yaml title="kind-cluster.yaml"
+# same shape as the on-prem cluster: one control plane, two workers
 kind: Cluster
 apiVersion: kind.x-k8s.io/v1alpha4
 name: metallb-l2

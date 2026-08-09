@@ -71,8 +71,7 @@ Let MetalLB assign randomly and the address changes the next time the service is
 
 The old `spec.loadBalancerIP` field is deprecated in Kubernetes; MetalLB reads an annotation instead:
 
-```yaml
-# values-ingress.yaml
+```yaml title="values-ingress.yaml"
 controller:
   service:
     type: LoadBalancer
@@ -165,8 +164,7 @@ kubectl expose deployment demo --port=80
 
 Note the service is **ClusterIP** — that is the point. It never takes a LAN address of its own.
 
-```yaml
-# demo-ingress.yaml
+```yaml title="demo-ingress.yaml"
 apiVersion: networking.k8s.io/v1
 kind: Ingress
 metadata:

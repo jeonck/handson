@@ -41,6 +41,7 @@ This is the reason the skill exists. Not a retrospective — **a document the ne
 - Replace environment-specific values (hostnames, accounts, regions, ARNs, IPs) with `<PLACEHOLDER>` or a variable.
 - **Never keep secrets.** If tokens, passwords, or private keys appear in the input, replace them with `<REDACTED>` and state in your final report that the input contained credential-looking values that were masked.
 - Where order matters, add half a line saying why.
+- When a block *is* a file, name it in the fence — ```` ```yaml title="values.yaml" ```` — rather than as a comment on the first line, which gets copied with the file.
 
 ### 3. Fill in the frontmatter
 

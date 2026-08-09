@@ -9,6 +9,7 @@
     "serve": "node scripts/build.mjs && npx --yes serve dist"
   },
   "dependencies": {
+    "highlight.js": "^11.11.1",
     "marked": "^15.0.0"
   }
 }

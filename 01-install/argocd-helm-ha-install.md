@@ -49,8 +49,7 @@ export ARGOCD_HOST="argocd.example.com"
 
 ## 2. values file
 
-```yaml
-# argocd-values.yaml
+```yaml title="argocd-values.yaml"
 global:
   domain: argocd.example.com
 
@@ -134,8 +133,7 @@ kubectl -n argocd delete secret argocd-initial-admin-secret
 
 Driving Argo CD from the UI turns every click into an unrecorded change. Create exactly one root Application by hand and let Git own everything below it.
 
-```yaml
-# bootstrap/root.yaml
+```yaml title="bootstrap/root.yaml"
 apiVersion: argoproj.io/v1alpha1
 kind: Application
 metadata:

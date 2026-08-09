@@ -347,8 +347,8 @@ curl -fsSLO https://raw.githubusercontent.com/projectcalico/calico/v3.28.2/manif
 
 **Edit `custom-resources.yaml` before applying it.** The shipped file uses `192.168.0.0/16`, which is not the CIDR passed to `kubeadm init` above — and on-prem it very often collides with the office LAN as well.
 
-```yaml
-# custom-resources.yaml — the ipPools entry
+```yaml title="custom-resources.yaml"
+# the ipPools entry
     ipPools:
       - blockSize: 26
         cidr: 10.244.0.0/16        # must equal --pod-network-cidr

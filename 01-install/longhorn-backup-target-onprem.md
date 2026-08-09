@@ -157,8 +157,7 @@ kubectl -n longhorn-system get backups -o custom-columns=\
 
 ## 4. Recurring jobs
 
-```yaml
-# recurring-backup.yaml
+```yaml title="recurring-backup.yaml"
 apiVersion: longhorn.io/v1beta2
 kind: RecurringJob
 metadata:
@@ -236,8 +235,7 @@ Keep that output. It is the comparison at the end, and "the file exists" is not 
 
 Longhorn exposes restores through the CSI snapshot interface. A `VolumeSnapshotClass` of type `bak` maps a Longhorn backup to a `VolumeSnapshot`, which a new PVC can use as its data source:
 
-```yaml
-# restore.yaml
+```yaml title="restore.yaml"
 apiVersion: snapshot.storage.k8s.io/v1
 kind: VolumeSnapshotClass
 metadata:

@@ -24,6 +24,12 @@
   --d-daily: #c2325f;
   --d-archive: #6b7280;
 
+  --c-comment: #7b7b73;
+  --c-key:     #6b4dfa;
+  --c-str:     #1f7a4d;
+  --c-num:     #b26a00;
+  --c-attr:    #2563c9;
+  --c-type:    #0b7285;
   --radius: 12px;
   --radius-lg: 16px;
   --shadow: 0 1px 2px rgb(0 0 0 / .05), 0 8px 24px -12px rgb(0 0 0 / .12);
@@ -57,6 +63,12 @@
     --d-reference: #6fa4f5;
     --d-daily: #f0709a;
     --d-archive: #9aa2ae;
+    --c-comment: #7b7b73;
+    --c-key:     #9b86ff;
+    --c-str:     #4ec98d;
+    --c-num:     #e0a54a;
+    --c-attr:    #6fa4f5;
+    --c-type:    #4ec9d8;
     --shadow: 0 1px 2px rgb(0 0 0 / .4), 0 8px 24px -12px rgb(0 0 0 / .7);
   }
 }
@@ -66,6 +78,8 @@
   --line: #e4e4e1; --line-strong: #d0d0cc;
   --ink: #1a1a19; --ink-2: #55554f; --ink-3: #86867e;
   --accent: #0b7285; --accent-soft: #e2f2f4; --on-accent: #ffffff;
+  --c-comment: #7b7b73; --c-key: #6b4dfa; --c-str: #1f7a4d;
+  --c-num: #b26a00; --c-attr: #2563c9; --c-type: #0b7285;
   --ok: #1f8a5c; --warn: #b26a00; --danger: #c02b2b;
   --d-inbox: #b8860b; --d-install: #6b4dfa; --d-runbook: #1f7a4d;
   --d-troubleshoot: #c02b2b; --d-reference: #2563c9; --d-daily: #c2325f; --d-archive: #6b7280;
@@ -76,6 +90,8 @@
   --line: #2a2a2b; --line-strong: #3a3a3c;
   --ink: #ececea; --ink-2: #a8a8a2; --ink-3: #74746e;
   --accent: #4ec9d8; --accent-soft: #10333a; --on-accent: #06222a;
+  --c-comment: #7b7b73; --c-key: #9b86ff; --c-str: #4ec98d;
+  --c-num: #e0a54a; --c-attr: #6fa4f5; --c-type: #4ec9d8;
   --ok: #4ec98d; --warn: #e0a54a; --danger: #f0736f;
   --d-inbox: #d9a63c; --d-install: #9b86ff; --d-runbook: #4ec98d;
   --d-troubleshoot: #f0736f; --d-reference: #6fa4f5; --d-daily: #f0709a; --d-archive: #9aa2ae;
@@ -327,6 +343,36 @@ code { font-family: var(--mono); font-size: .89em; background: var(--bg-sunk); p
 .fresh .gap { flex-shrink: 0; }
 .fresh .age { font-size: 11.5px; font-variant-numeric: tabular-nums; white-space: nowrap; }
 
+/* A named config file reads better with its name on the block than as a comment on line one,
+   which looks like part of the file and gets copied with it. ```yaml title="values.yaml" */
+.codefile {
+  margin: 0 0 16px; border: 1px solid var(--line); border-radius: 10px;
+  overflow: hidden; background: var(--bg-sunk);
+}
+.codefile figcaption {
+  display: flex; align-items: center; gap: 10px;
+  padding: 7px 14px; border-bottom: 1px solid var(--line);
+  background: var(--bg-elev); font-size: 12px;
+}
+.codefile .fname { font-family: var(--mono); font-weight: 600; color: var(--ink); }
+.codefile .flang {
+  margin-left: auto; font-size: 10px; letter-spacing: .07em; text-transform: uppercase;
+  color: var(--ink-3);
+}
+.prose .codefile pre { margin: 0; border: 0; border-radius: 0; }
+
+/* Syntax tokens, tuned to this site's palette rather than a stock highlighter theme —
+   a light page with a dark Monokai block in the middle of it reads as a foreign object. */
+.hljs-comment, .hljs-quote { color: var(--c-comment); font-style: italic; }
+.hljs-keyword, .hljs-selector-tag, .hljs-literal, .hljs-doctag, .hljs-name { color: var(--c-key); }
+.hljs-string, .hljs-regexp, .hljs-addition { color: var(--c-str); }
+.hljs-number, .hljs-variable, .hljs-template-variable, .hljs-symbol, .hljs-bullet { color: var(--c-num); }
+.hljs-attr, .hljs-attribute, .hljs-section, .hljs-selector-attr { color: var(--c-attr); }
+.hljs-built_in, .hljs-type, .hljs-title, .hljs-meta, .hljs-selector-id { color: var(--c-type); }
+.hljs-deletion { color: var(--danger); }
+.hljs-emphasis { font-style: italic; }
+.hljs-strong { font-weight: 600; }
+
 /* ---------- doc reader ---------- */
 
 .reader { display: grid; grid-template-columns: minmax(0, 1fr) 244px; gap: 40px; align-items: start; }
@@ -472,7 +518,10 @@ code { font-family: var(--mono); font-size: .89em; background: var(--bg-sunk); p
 .footer a:hover { color: var(--accent); }
 
 @media (max-width: 900px) {
-  .reader { grid-template-columns: 1fr; gap: 26px; }
+  /* minmax(0, 1fr), not 1fr: a bare `1fr` column keeps min-width:auto, so one long
+     unwrappable command line widens the whole page instead of scrolling inside its
+     own block. The desktop rule above already does this. */
+  .reader { grid-template-columns: minmax(0, 1fr); gap: 26px; }
   .aside { position: static; max-height: none; border-top: 1px solid var(--line); padding-top: 20px; }
   .two-col { grid-template-columns: 1fr; }
 }

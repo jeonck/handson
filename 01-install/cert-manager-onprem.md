@@ -113,8 +113,7 @@ Everything stays inside the cluster. cert-manager creates a self-signed root, th
 
 ### A.1 Root and ClusterIssuer
 
-```yaml
-# internal-ca.yaml
+```yaml title="internal-ca.yaml"
 apiVersion: cert-manager.io/v1
 kind: ClusterIssuer
 metadata:
@@ -201,8 +200,7 @@ This uses Cloudflare as the concrete example. Route53, Google Cloud DNS, AzureDN
 
 Let's Encrypt enforces rate limits, and the useful one to know is **five duplicate certificates per week.** Debugging a solver against production burns that quota in an afternoon and then locks you out for days.
 
-```yaml
-# letsencrypt-staging.yaml
+```yaml title="letsencrypt-staging.yaml"
 apiVersion: cert-manager.io/v1
 kind: ClusterIssuer
 metadata:
@@ -252,8 +250,7 @@ Staging certificates are signed by an untrusted root, so browsers still warn —
 
 One annotation on the Ingress. cert-manager watches for it, requests the certificate, and writes it into the named secret; ingress-nginx picks the secret up and serves it.
 
-```yaml
-# demo-ingress.yaml
+```yaml title="demo-ingress.yaml"
 apiVersion: networking.k8s.io/v1
 kind: Ingress
 metadata:

@@ -13,6 +13,7 @@ import { existsSync } from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { marked } from "marked";
+import hljs from "highlight.js";
 
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 const DIST = path.join(ROOT, "dist");
@@ -137,7 +138,7 @@ function extractTasks(body) {
 // from something you follow.
 function countCommands(body) {
   let n = 0;
-  for (const block of body.matchAll(/```(\w*)\r?\n([\s\S]*?)```/g)) {
+  for (const block of body.matchAll(/```(\w*)[^\n]*\r?\n([\s\S]*?)```/g)) {
     const lang = (block[1] || "").toLowerCase();
     if (!["bash", "sh", "shell", "console", "zsh"].includes(lang)) continue;
     for (const line of block[2].split(/\r?\n/)) {
@@ -270,6 +271,24 @@ const headingSlug = (text) => {
   return n ? `${base}-${n}` : base;
 };
 
+// A config file is easier to follow when the block says which file it is.
+// ```yaml title="argocd-values.yaml" puts the name in a header bar instead of a comment
+// on line one, which reads as part of the file and gets copied along with it.
+const INFO = /^(\S+)?(?:\s+title="([^"]+)")?/;
+
+// Languages highlight.js does not carry (hcl/terraform among them) fall through to plain
+// text — the header bar and layout still apply, only the token colours are missing.
+function highlight(code, lang) {
+  if (lang && hljs.getLanguage(lang)) {
+    try {
+      return hljs.highlight(code, { language: lang, ignoreIllegals: true }).value;
+    } catch {
+      /* fall through to escaped plain text */
+    }
+  }
+  return escapeHtml(code);
+}
+
 marked.use({
   gfm: true,
   breaks: false,
@@ -277,6 +296,18 @@ marked.use({
     heading({ tokens, depth }) {
       const text = this.parser.parseInline(tokens);
       return `<h${depth} id="${headingSlug(text)}">${text}</h${depth}>\n`;
+    },
+    code({ text, lang }) {
+      const [, language = "", title = ""] = (lang || "").match(INFO) || [];
+      const key = language.toLowerCase();
+      const body = `<pre><code class="language-${escapeHtml(key || "text")}">${highlight(text, key)}</code></pre>`;
+      if (!title) return body;
+      return (
+        `<figure class="codefile">` +
+        `<figcaption><span class="fname">${escapeHtml(title)}</span>` +
+        (key ? `<span class="flang">${escapeHtml(key)}</span>` : "") +
+        `</figcaption>${body}</figure>\n`
+      );
     },
   },
 });
