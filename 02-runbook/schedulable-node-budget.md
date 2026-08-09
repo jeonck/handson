@@ -4,7 +4,7 @@ date: 2026-08-08
 domain: runbook
 tags: [on-prem, capacity, scheduling]
 stack: [kubernetes, kubectl, longhorn, argocd, ingress-nginx]
-summary: Three machines is not three nodes. Establish how many nodes an add-on can actually place workloads on, and size the add-on to that number before installing — the same miscount produces a silent permanent degradation in one component and a permanent Pending in another.
+summary: Three machines is not three nodes. Establish how many nodes an add-on can actually place workloads on, and size the add-on to that number before installing — the same miscount produces a silent permanent degradation in one component and a permanent Pending in another. This cluster's standing answer is recorded in step 2: taint kept, budget 2.
 source: standardize
 env:
 verified:
@@ -89,6 +89,32 @@ Rollback: n/a.
 
 ### Step 2 — Decide the taint, once (**not reversible in the way it looks**)
 
+> ## Standing decision for this cluster — 2026-08-09
+>
+> **Keep the control-plane taint. Longhorn runs at two replicas.**
+>
+> Budget: **2 schedulable nodes** on three machines. Reason: the control plane is the 4 GB node
+> [[onprem-3node-kubeadm-ubuntu]] warns about, and a workload evicting etcd takes the cluster down
+> rather than one application. Storage redundancy is worth less than the API server staying up.
+>
+> **This is the answer for new add-ons too.** Do not re-open it per component; size the component to
+> 2 and, if it cannot work at 2, that is a hardware conversation rather than a taint conversation.
+>
+> The cost of this choice, accepted knowingly:
+>
+> - Longhorn survives one node loss and not a second failure during the rebuild
+> - **Argo CD cannot run `redis-ha` here** — it needs three schedulable nodes. Set
+>   `redis-ha.enabled: false`, or add a machine. [[argocd-helm-ha-install]] still ships HA values
+>   that assume three; they do not apply to this cluster as decided
+> - ingress-nginx has exactly two nodes to spread across, so draining one leaves no margin. See the
+>   abort criteria below before draining during a maintenance window
+>
+> Revisit only when a fourth machine exists, or when the control plane is replaced with hardware that
+> has room. Revisiting means re-reading this whole section, not just running the untaint command.
+
+The rest of this step is the reasoning behind that decision, kept because the decision has to be
+re-made if the hardware changes.
+
 You can raise the budget by removing the control-plane taint:
 
 ```bash
@@ -110,8 +136,10 @@ The sources do not agree on what to do here, and this is the decision to make de
 
 They do not contradict each other, but **on three machines you cannot have all three of: the taint
 kept, Longhorn at three replicas, and Argo CD's `redis-ha`.** Pick two, or add a fourth machine.
-Whichever you pick, write down which, because the next add-on will pose the same question and a
-different answer to it produces a cluster nobody can reason about.
+
+This cluster picked the first two — see the standing decision above. The one given up is Argo CD's
+`redis-ha`, which is the choice to remember, because nothing in the Argo CD install will stop you
+from trying it and the failure takes ten minutes of `helm --wait` to arrive.
 
 Rollback: re-apply the taint with the same command minus the trailing `-`. See the caveat above.
 
@@ -120,11 +148,14 @@ Rollback: re-apply the taint with the same command minus the trailing `-`. See t
 Before running any install command, find its node-count assumption and set it explicitly rather than
 taking the chart default:
 
-| Add-on | Setting | Rule |
-|---|---|---|
-| Longhorn | `defaultSettings.defaultReplicaCount` | ≤ schedulable nodes. See [[longhorn-storage-onprem]] |
-| Argo CD | `redis-ha.enabled` | needs ≥ 3 schedulable nodes; set `false` below that. See [[argocd-helm-ha-install]] |
-| ingress-nginx | `controller.replicaCount` + spread constraint | ≥ 2, spread across nodes, when using `externalTrafficPolicy: Local`. See [[ingress-nginx-onprem]] |
+| Add-on | Setting | Rule | This cluster |
+|---|---|---|---|
+| Longhorn | `defaultSettings.defaultReplicaCount` | ≤ schedulable nodes. See [[longhorn-storage-onprem]] | `2` |
+| Argo CD | `redis-ha.enabled` | needs ≥ 3 schedulable nodes; set `false` below that. See [[argocd-helm-ha-install]] | `false` |
+| ingress-nginx | `controller.replicaCount` + spread constraint | ≥ 2, spread across nodes, when using `externalTrafficPolicy: Local`. See [[ingress-nginx-onprem]] | `2`, no margin to drain |
+
+The right-hand column follows from the standing decision, not from the chart defaults. A chart that
+defaults to something larger will install happily and fail in whichever way that component fails.
 
 Rollback: these are pre-install values; nothing to roll back if you have not installed yet.
 
@@ -153,8 +184,13 @@ that volume runs perfectly, so no workload-level check will catch it.
 
 ## Abort criteria (any one of these — stop immediately)
 
+- The pre-check returns anything other than **2**. Either a machine is gone or the taint has been
+  removed against the standing decision. Find out which before installing anything.
 - The schedulable-node count disagrees with what the last install was sized for. Stop and reconcile
   before installing anything else; a second add-on sized against a stale number compounds it.
+- A drain is planned while the budget is 2. Draining takes it to 1: Longhorn cannot place its second
+  replica and ingress-nginx loses its spread. That is survivable and it is not a normal state — read
+  [[k8s-node-drain-replace]] first and keep the window short.
 - Removing the taint is being considered mid-incident. It is a capacity decision, not a remedy, and
   it puts workloads next to etcd at the moment the cluster is least able to absorb that.
 - An add-on's own preflight reports a different node count from the pre-check above. One of the two
@@ -164,19 +200,21 @@ that volume runs perfectly, so no workload-level check will catch it.
 
 ## Verification checklist
 
-- [ ] The schedulable-node count is written down somewhere other than a terminal
+- [ ] The pre-check returns `2`, matching the standing decision in step 2
 - [ ] Every add-on installed since the last count has an explicit node-count setting, not a default
+- [ ] No add-on is running with a chart default where the table in step 3 gives a value
 - [ ] `kubectl -n <NS> get pods -o wide` shows the intended number of **distinct** nodes per add-on
 - [ ] Longhorn volumes report `healthy`, not merely `attached`
 - [ ] Argo CD `redis-ha` pods are `Running`, not `Pending`
 - [ ] ingress-nginx controller replicas are on different nodes
-- [ ] The taint decision from step 2 is recorded with its date and its reason
+- [ ] The standing decision in step 2 still matches the hardware — re-read it, do not assume it
 - [ ] Re-running the pre-check after all installs returns the same number it did before
 
 ## Follow-ups
 
+- [x] Decide the standing answer to step 2 for this cluster and record it once — done 2026-08-09: taint kept, budget 2
+- [ ] Reconcile [[argocd-helm-ha-install]] with that decision. It still ships values with `redis-ha` enabled, which cannot schedule at a budget of 2, and its own text says "add nodes instead" 📅 2026-08-21
 - [ ] Run this before the next add-on install and set `verified` 📅 2026-09-30
-- [ ] Decide the standing answer to step 2 for this cluster and record it once, rather than per add-on
 - [ ] Add the schedulable-node count to whatever inventory holds cluster facts, so it is not re-derived
 - [ ] Work out whether any add-on here can be given a control-plane toleration deliberately, rather than treating the budget as fixed
 
