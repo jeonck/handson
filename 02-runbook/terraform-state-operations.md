@@ -285,7 +285,7 @@ for additional information.
 
 `local_file` and `random_pet` both produce that, so an `import` block cannot be practised without a real API behind it. Worth knowing in itself: **import support is per-resource, not a Terraform feature you can assume.** Check the provider's documentation for the resource before planning an adoption; discovering this during a migration is expensive.
 
-**Remote backend locking.** The local backend takes a file lock, and the error above is what that produces. S3 with DynamoDB, or Terraform Cloud, fail differently and can leave a lock behind when a runner is killed — which is the situation `force-unlock` exists for and the one this lab never reaches.
+**Remote backend locking.** The local backend takes a file lock, and the error above is what that produces. S3 with DynamoDB, or Terraform Cloud, fail differently and can leave a lock behind when a runner is killed — which is the situation `force-unlock` exists for and the one this lab never reaches. [[terraform-remote-backend-lock-import]] closes this for a real remote backend, including a stale lock and `force-unlock`; S3 and DynamoDB specifically are still untested.
 
 ---
 
@@ -333,8 +333,8 @@ Terraform writes `terraform.tfstate.backup` on the local backend automatically, 
 
 ## Follow-ups
 
-- [ ] Repeat sections 1–4 against a remote backend with S3 and DynamoDB, where the lock is not a file
-- [ ] Rehearse `import` once with a provider that implements it, and record whether the generated configuration matches what was written by hand
+- [ ] Repeat sections 1–4 against S3 and DynamoDB, where the lock is not a file — the http-backend half is done in [[terraform-remote-backend-lock-import]], the S3 half is not
+- [x] Rehearse `import` once with a provider that implements it — done in [[terraform-remote-backend-lock-import]] with `terraform_data`, including `-generate-config-out`
 - [ ] Put `terraform plan -detailed-exitcode` in CI on a schedule, so drift is found before the next apply rather than during it
 - [ ] Decide the team rule: `moved`/`removed` blocks in review, `state mv`/`state rm` only during an incident with a state backup taken first
 
