@@ -654,9 +654,8 @@ inherited from upstream rather than seen here:
 
 ## Follow-ups
 
-- [ ] Re-run this on real hardware and close the four gaps EC2 papered over — swap, `product_uuid` on cloned templates, `ufw` as an actual firewall, and NIC behaviour 📅 2026-09-30
-- [ ] Give the cluster a default StorageClass — a bare cluster has none, so any PVC stays `Pending`. Procedure drafted in [[longhorn-storage-onprem]], still unverified
-- [ ] Give the cluster working `type: LoadBalancer` services — on-prem has no cloud load balancer, so they stay `Pending` until something answers. Procedure drafted in [[metallb-l2-onprem]], still unverified
+- [ ] Give the cluster a default StorageClass — a bare cluster has none, so any PVC stays `Pending`. Procedure in [[longhorn-storage-onprem]], verified on EC2 but not on this cluster
+- [ ] Give the cluster working `type: LoadBalancer` services — on-prem has no cloud load balancer, so they stay `Pending` until something answers. Procedure in [[metallb-l2-onprem]], verified on a bridge but not on this LAN
 - [ ] Replace `admin.conf` sharing with per-user credentials before a second person needs access
 - [ ] Set up etcd backups — a single control plane means etcd is the whole cluster
 - [ ] Write down the upgrade path before the next minor release lands

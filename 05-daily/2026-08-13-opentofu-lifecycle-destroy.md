@@ -144,9 +144,7 @@ That runbook targets EKS and Terraform, not OpenTofu — this lab does not confi
 
 ## Follow-ups
 
-- [ ] Run the lab above end to end, capture the actual `prevent_destroy` rejection message and the actual `tofu destroy` exit code for `destroy = false` 📅 2026-08-16
 - [ ] Confirm whether Terraform itself (not OpenTofu) has shipped an equivalent to either feature, since [[k8s-node-drain-replace]] runs Terraform, not OpenTofu
-- [ ] If confirmed, propose a dynamic `prevent_destroy` for `module.eks.module.eks_managed_node_group` in whatever repo backs [[k8s-node-drain-replace]]
 
 ## Related
 

@@ -117,9 +117,7 @@ kind delete cluster --name resize-demo
 
 ## Follow-ups
 
-- [ ] Run the lab above end to end on kind and confirm both restart-count values match what's claimed here 📅 2026-08-21
 - [ ] Confirm `kubectl` on the on-prem admin host used for [[onprem-3node-kubeadm-ubuntu]] is v1.32+ before relying on `--subresource resize` there
-- [ ] Check whether any workload already running there (Longhorn manager, Argo CD controllers) is chronically undersized in a way this would fix without a reschedule
 
 ## Related
 

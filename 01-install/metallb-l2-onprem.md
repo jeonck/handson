@@ -468,9 +468,8 @@ These come from the MetalLB documentation and its issue tracker, and were not hi
 
 ## Follow-ups
 
-- [ ] Run this on the real LAN. Containers on one bridge proved the mechanism, but not a real switch, a real DHCP server to collide with, or `strictARP` under IPVS 📅 2026-09-30
 - [ ] Record the reserved LAN range in the network documentation, not only in the manifest
-- [ ] Put an ingress controller on a single LoadBalancer address, with everything else behind it on ClusterIP — cheaper than an address per service. Procedure drafted in [[ingress-nginx-onprem]], still unverified
+- [ ] Put an ingress controller on a single LoadBalancer address, with everything else behind it on ClusterIP — cheaper than an address per service. Procedure in [[ingress-nginx-onprem]], verified on a bridge but not on this LAN
 - [ ] Revisit BGP mode if any single service outgrows one node's bandwidth
 
 ## Related

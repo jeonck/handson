@@ -257,7 +257,6 @@ kubectl delete namespace argocd
 ## Follow-ups
 
 - [ ] Wire up OIDC (SSO), then disable the local `admin` account 📅 2026-08-21
-- [ ] Run section 2.1 on the on-prem cluster and correct it — it is currently the only unexecuted part of this document 📅 2026-09-30
 - [ ] Bring Argo CD itself under the root app so it becomes self-managed
 - [ ] Back up `argocd-cm`, `argocd-rbac-cm`, and the Application manifests into Git
 

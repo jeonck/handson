@@ -333,7 +333,6 @@ Terraform writes `terraform.tfstate.backup` on the local backend automatically, 
 
 ## Follow-ups
 
-- [ ] Repeat sections 1–4 against S3 and DynamoDB, where the lock is not a file — the http-backend half is done in [[terraform-remote-backend-lock-import]], the S3 half is not
 - [x] Rehearse `import` once with a provider that implements it — done in [[terraform-remote-backend-lock-import]] with `terraform_data`, including `-generate-config-out`
 - [ ] Put `terraform plan -detailed-exitcode` in CI on a schedule, so drift is found before the next apply rather than during it
 - [ ] Decide the team rule: `moved`/`removed` blocks in review, `state mv`/`state rm` only during an incident with a state backup taken first

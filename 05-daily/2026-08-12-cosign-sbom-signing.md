@@ -111,9 +111,7 @@ The other half of the value is enforcement, not signing — a signed image nobod
 
 ## Follow-ups
 
-- [ ] Run the lab above end to end and confirm both `verify` commands actually exit `0` with the output claimed here 📅 2026-08-15
 - [ ] Confirm the `spdx` vs `spdxjson` mismatch actually produces the error the Traps section predicts, rather than silently accepting the wrong type
-- [ ] Once this repo builds a first custom image for anything, revisit whether policy-controller or Kyverno `imageVerify` belongs in [[argocd-helm-ha-install]]'s cluster
 
 ## Related
 

@@ -154,8 +154,6 @@ kind delete cluster --name rollouts-demo
 
 ## Follow-ups
 
-- [ ] Run the lab above end to end on kind and confirm the `--watch` output actually matches what is claimed here 📅 2026-08-11
-- [ ] Configure `trafficRouting.nginx` against the existing ingress-nginx setup and verify real traffic splitting, not replica-count approximation 📅 2026-08-24
 - [ ] Check the Argo CD version pinned in [[argocd-helm-ha-install]] is ≥2.0 so the built-in Rollout health check applies
 
 ## Related

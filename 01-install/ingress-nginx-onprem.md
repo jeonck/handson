@@ -386,7 +386,6 @@ These come from the ingress-nginx and MetalLB documentation, and were not hit on
 
 ## Follow-ups
 
-- [ ] Re-run on the real cluster — containers on a bridge proved the routing and the client IP, but node-death timing depends on real machines 📅 2026-09-30
 - [ ] Re-measure the `Local` failover window on hardware, and decide whether the client IP is worth it at that number
 - [ ] Create the wildcard DNS record so hostnames work for everyone, not just workstations with an edited hosts file
 - [ ] Move Argo CD from its own LoadBalancer address to a host behind this controller, gRPC path included

@@ -126,9 +126,7 @@ rm -f client-ca.key client-ca.crt client-ca.srl client.key client.csr client.crt
 
 ## Follow-ups
 
-- [ ] Run the lab above end to end on kind and confirm the "Generated ephemeral health-check client certificate" log line actually appears 📅 2026-08-22
 - [ ] Confirm which `argo/argo-cd` chart version is the first to ship Argo CD app `3.5.0`, and record it before touching [[argocd-helm-ha-install]]'s pinned chart version
-- [ ] Decide whether per-component certificates are worth the rotation overhead before ever enabling this outside a lab
 
 ## Related
 

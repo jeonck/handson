@@ -148,9 +148,7 @@ kind delete cluster --name prom-demo
 
 ## Follow-ups
 
-- [ ] Run the lab above end to end on kind and confirm both `curl` checks actually return what's claimed here 📅 2026-08-14
 - [ ] Check whether Longhorn's Prometheus metrics endpoint is enabled by default in [[longhorn-storage-onprem]]'s install, or needs a values change
-- [ ] Once confirmed, size kube-state-metrics + Prometheus against the schedulable-node budget in [[schedulable-node-budget]] before installing either for real
 
 ## Related
 

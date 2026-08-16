@@ -376,8 +376,6 @@ The server holds state in memory, so stopping it discards everything. That is ri
 
 ## Follow-ups
 
-- [ ] Repeat sections 2–5 against S3 with `use_lockfile = true`, and record how a refused lock presents there 📅 2026-09-30
-- [ ] Repeat once more against DynamoDB locking, which is still what most existing setups use
 - [ ] Write down the team rule for `force-unlock`: who may run it, and what evidence of a dead holder is required first
 - [ ] Check whether the CI pipeline passes `-lock=false` anywhere, and remove it if so
 

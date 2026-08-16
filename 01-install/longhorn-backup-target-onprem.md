@@ -378,7 +378,6 @@ Drafted from Longhorn's documentation. **None of these have been hit here**, bec
 
 ## Follow-ups
 
-- [ ] Run this end to end, then fill in `verified` and rewrite the table above with what was observed rather than reasoned
 - [ ] Break it deliberately: point at a non-existent bucket, stop the NFS export mid-restore, corrupt a backup — and record what each check said 📅 2026-09-30
 - [ ] Restore into a **different cluster**, which is the only test of the property this document actually claims
 - [ ] Install the CSI external-snapshotter and pin its version here, or document the UI restore path instead

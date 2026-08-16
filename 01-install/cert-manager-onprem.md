@@ -444,8 +444,6 @@ Path B entries are unproven along with the rest of Path B.
 
 ## Follow-ups
 
-- [ ] Run Path B against a real zone on the staging ACME endpoint, correct it, and note in `env` that it has been 📅 2026-09-30
-- [ ] Re-run Path A on the real cluster — kind proved the issuance and the trust chain, not the clock-skew failure mode the prerequisites warn about
 - [ ] Decide which path is the standard here, and write down why — mixing both leaves nobody sure which hosts are trusted where
 - [ ] Path A: get the root certificate into whatever provisions new laptops, not into a wiki page people copy by hand
 - [ ] Path B: record where the DNS API token lives and when it expires
