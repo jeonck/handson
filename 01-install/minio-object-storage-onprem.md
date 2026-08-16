@@ -12,6 +12,11 @@ duration: 60–90 min
 risk: medium
 ---
 
+> **Read [[s3-object-storage-options]] first.** That page compares this product against Rook/Ceph
+> and Garage for this cluster, and recommends against MinIO on the strength of the §0 finding
+> below. This document stays as the record of the MinIO investigation and is still accurate;
+> it is no longer the default answer.
+>
 > ⚠️ **Nothing in this document has been run.** It was assembled on 2026-08-16 from MinIO's own
 > documentation, the archived `minio/minio` and `minio/operator` repositories, and MinIO's published
 > security advisories. Every version, minimum, and default below is quoted from a source with a URL;
