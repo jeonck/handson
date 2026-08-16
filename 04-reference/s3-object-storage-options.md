@@ -204,7 +204,7 @@ What would change the recommendation:
 ## Follow-ups
 
 - [ ] Decide between Garage and paid AIStor and record the decision with its date, the way the taint decision is recorded in [[schedulable-node-budget]] 📅 2026-08-30
-- [ ] If Garage: write the install guide, and rewrite the scoped-access-key checks from [[minio-object-storage-onprem]] against Garage's per-key model rather than bucket policies
+- [x] If Garage: write the install guide — done 2026-08-16, [[garage-object-storage-onprem]]. It rewrites the scoped-access-key check against `bucket allow` rather than bucket policies, since Garage implements none of the policy endpoints
 - [ ] Confirm by testing, not by reading, that barman-cloud and Longhorn's backupstore work against Garage — both are inferred above from an endpoint table, and a backup target that fails is worth less than no backup target
 - [ ] Re-check whether Rook still supports Kubernetes 1.31 before any future reconsideration — 1.31 is at the bottom of its stated window
 
