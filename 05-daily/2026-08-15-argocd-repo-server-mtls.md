@@ -2,7 +2,7 @@
 title: Topic of the day — mutual TLS for Argo CD's repo-server (new in 3.5)
 date: 2026-08-15
 domain: daily
-tags: [daily, gitops-and-delivery]
+tags: [daily, gitops-and-delivery, not-executed]
 stack: [kubernetes, argocd, helm, kind]
 summary: Enable the new opt-in mTLS between argocd-server/controllers and argocd-repo-server shipped in Argo CD 3.5, and see exactly what it authenticates and what it still leaves wide open.
 source: daily-topic

@@ -15,11 +15,45 @@ Write everything in English. This repository publishes an English site.
 
 1. **Cite why the topic was chosen.** "It's trending" is not a reason. Link release notes, official docs, or SIG discussion, with a date.
 2. **Only commands that actually run.** Do not invent them. Use procedures confirmed in official documentation, and mark any step you could not confirm as such.
-3. **It has to finish locally.** kind / minikube / docker / local CLI. Never choose a lab that needs a cloud account or spend.
+3. **It has to finish in the environment this run is actually in** — which is not always the same environment. Probe before choosing a topic (step 0). kind / minikube / docker / local CLI only; never a lab that needs a cloud account or spend.
 4. **State versions.** Chart, CRD, and image tags go in as fixed values, alongside how to find the current tag.
 5. **Say when you do not know.** Do not fill a blank with a plausible sentence.
 
 ## Procedure
+
+### 0. Establish the mode, and check the backlog first
+
+**Both of these happen before you choose a topic**, because both change what you should choose.
+
+**Probe what this run can execute.** An interactive run and a scheduled run are different machines
+with different permissions. Do not assume; find out, with the cheapest command of each kind:
+
+```bash
+docker ps                 # read-only — often allowed where `docker run` is not
+kind get clusters         # the one that matters; this is what a lab actually needs
+kubectl version --client
+```
+
+- All three work → **`lab` mode.** Build a lab, run it, and write from what you saw.
+- Any of them blocked, missing, or waiting on an approval nobody will answer → **`notes` mode.**
+
+`notes` mode is a legitimate output, not a degraded one — but it is a *different* output, and the
+rest of this skill branches on it. A scheduled run with no user in the loop is normally `notes`.
+
+**Then count the backlog.** How many documents in `05-daily/` are tagged `not-executed` and still
+have an open follow-up asking for someone to run them?
+
+```bash
+grep -l 'not-executed' 05-daily/*.md | wc -l
+```
+
+- **3 or more, and this run is in `notes` mode → produce nothing.** Stop here and report the
+  backlog instead. Six unexecuted labs in a row is not six days of work, it is one capacity problem
+  restated six times, and adding a seventh makes the repository less useful rather than more.
+- 3 or more, and this run is in `lab` mode → **execute the oldest one in the backlog instead of
+  picking a new topic.** Correct that document from what you observe, drop the `not-executed` tag,
+  and close its follow-up. Clearing the backlog outranks a new topic every time.
+- Fewer than 3 → continue.
 
 ### 1. Read the scope
 
@@ -44,9 +78,33 @@ Selection criteria, in priority order:
 2. Can it be verified in a 30-minute lab?
 3. Will knowing it now matter next quarter?
 
+**In `notes` mode, criterion 2 inverts.** You cannot run anything, so pick a topic whose value
+survives not being run: a changed default, a deprecation, a flag that moved, a version skew that
+affects a document already in this repository. A topic whose whole point is watching something work
+is the wrong choice for a run that cannot watch it — writing it up unrun produces a tutorial nobody
+has any more reason to trust than the upstream docs it was copied from.
+
 ### 4. Write it
 
 `05-daily/YYYY-MM-DD-<topic-slug>.md`, from `07-templates/daily.md`.
+
+**In `notes` mode, three things are mandatory** — the reader has to know from the card, not from
+paragraph four:
+
+- `tags` includes `not-executed`. This is what the backlog check in step 0 counts, and what a weekly
+  review can find.
+- `summary` says it was not executed, in the summary itself. The summary is the site's card text; a
+  disclosure that only appears in the body does not reach anyone scanning.
+- The lab section is headed **"Prepared lab — not executed"** rather than "30-minute lab", with a
+  banner naming what blocked it and where each command came from.
+
+And one thing is forbidden: **do not write an `### Verify` section with an "Expected:" output you
+did not see.** In `notes` mode write the check and leave the expected output blank, or state which
+line of the upstream documentation the expectation comes from. A predicted output presented in the
+same shape as an observed one is the defect this repository spends most of its effort removing.
+
+In `lab` mode, the Verify step must be one you watched succeed — and, where breaking the thing on
+purpose is cheap, one you also watched fail. Paste both.
 
 ```markdown
 ---
@@ -85,15 +143,34 @@ source: daily-topic
 
 Attach `[[wikilinks]]` to existing documents sharing a `stack`. Material that does not connect back to the repository is just a scraped tutorial.
 
+## Follow-ups in `notes` mode
+
+**One follow-up, dated, naming the smallest slice that would settle the topic** — not "run the lab
+above end to end". That wording is what accumulated six identical open items between 2026-08-10 and
+2026-08-15, each true, none actionable enough to pick up in a spare twenty minutes.
+
+```markdown
+- [ ] Run just step 2 on a kind cluster and confirm the `Resize` condition appears 📅 <date>
+```
+
+If the previous `not-executed` document already carries an equivalent follow-up, **do not add
+another**. The backlog is the `not-executed` tag, counted in step 0. A second copy of the same
+sentence tracks nothing.
+
 ## Do not
 
 - Choose a lab that costs cloud money
 - Write "just do this" for a command you never ran — if it came from official documentation, say so
 - Put the topic of the day in a real folder like `01-install/` — it stays in `05-daily/` until a human verifies it
 - Repeat a topic within 30 days
+- **Publish a `notes`-mode document when three or more are already outstanding.** Step 0 is a stop, not a warning
+- **Show an expected output you did not observe.** Blank is honest; predicted-and-formatted-as-observed is not
+- Let a `notes`-mode document reach `05-daily/` without the `not-executed` tag and without saying so in `summary`
 
 ## Report at the end
 
+- **Which mode this run was in, and the probe output that decided it** — first line, before anything else
+- The backlog count from step 0, and whether it stopped production or redirected it
 - The topic you chose and **why that one** (one line each for the candidates you dropped)
 - Source links with dates
 - **Steps you could not run and took from documentation only** — the user verifies those first

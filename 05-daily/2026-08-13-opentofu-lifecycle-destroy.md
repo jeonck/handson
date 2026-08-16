@@ -2,7 +2,7 @@
 title: Topic of the day — OpenTofu 1.12's `destroy = false` and dynamic `prevent_destroy`
 date: 2026-08-13
 domain: daily
-tags: [daily, iac]
+tags: [daily, iac, not-executed]
 stack: [opentofu, terraform, local-provider]
 summary: Practise the two new lifecycle meta-arguments in OpenTofu 1.12 — forgetting a resource instead of destroying it, and gating prevent_destroy on a variable instead of a hard-coded literal — entirely offline against the local provider.
 source: daily-topic

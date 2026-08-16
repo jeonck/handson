@@ -2,7 +2,7 @@
 title: Topic of the day — Prometheus 3.13 LTS, a self-scrape lab and the new min_of()/max_of()
 date: 2026-08-11
 domain: daily
-tags: [daily, observability]
+tags: [daily, observability, not-executed]
 stack: [kubernetes, prometheus, kind]
 summary: Stand up Prometheus on kind, confirm it's actually running the 3.13 LTS build, and try the two PromQL functions that release added — which stay silently broken without a feature flag nobody defaults on.
 source: daily-topic

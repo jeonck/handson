@@ -2,7 +2,7 @@
 title: Topic of the day — in-place Pod resize goes GA in Kubernetes 1.35
 date: 2026-08-14
 domain: daily
-tags: [daily, container-orchestration]
+tags: [daily, container-orchestration, not-executed]
 stack: [kubernetes, kubectl, kind]
 summary: Resize a running Pod's CPU and memory without recreating it — GA and on by default since Kubernetes 1.35 — and see exactly which resource needs a restart to apply and which doesn't.
 source: daily-topic
