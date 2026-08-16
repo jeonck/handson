@@ -47,9 +47,26 @@ Common causes of `ALLOWED DISRUPTIONS = 0`:
 
 | Cause | Check | Action |
 |---|---|---|
-| replicas=1 with `minAvailable: 1` | `kubectl get deploy <NAME>` | temporarily scale to 2 for the window |
+| replicas=1 with `minAvailable: 1` | `kubectl get deploy <NAME>` | temporarily scale to 2 for the window — **and record it, see below** |
 | one pod already unhealthy | `kubectl get pods -l <SELECTOR>` | fix that pod first |
 | single-instance StatefulSet | `kubectl get sts` | agree a downtime window with the owning team |
+
+**Write down every replica count you change, before you change it.** Step 6 puts them back, and it
+can only do that from a list. Capture it into a file rather than the scrollback — the window may
+outlive the terminal, and on the 2026-08-07 run this list was never written down, which is why the
+restore could not be confirmed afterwards.
+
+```bash
+# before scaling anything, snapshot what the affected workloads are set to
+kubectl get deploy -A \
+  -o custom-columns='NS:.metadata.namespace,NAME:.metadata.name,REPLICAS:.spec.replicas' \
+  > replicas-before-<CHANGE_TICKET>.txt
+```
+
+```bash
+# then scale, one at a time, so the file above stays the source of truth
+kubectl -n <NS> scale deploy <NAME> --replicas=2
+```
 
 ### 3. What only exists on this node
 
@@ -155,6 +172,48 @@ If the old node object lingers as `NotReady`, clean it up.
 kubectl delete node <NODE>
 ```
 
+### Step 6 — put back what the pre-checks changed (**the drain is not finished until this is done**)
+
+Pre-check 2 scaled workloads up so their PDBs would allow eviction. Those replicas are now costing
+money and, more importantly, they are a lie about the service's real topology — the next person to
+read `replicas: 2` will assume it was a capacity decision.
+
+```bash
+# what is set now, against what you recorded before the window
+kubectl get deploy -A \
+  -o custom-columns='NS:.metadata.namespace,NAME:.metadata.name,REPLICAS:.spec.replicas' \
+  | diff - replicas-before-<CHANGE_TICKET>.txt
+```
+
+```bash
+kubectl -n <NS> scale deploy <NAME> --replicas=1
+```
+
+Empty `diff` output is the pass condition. **A non-empty diff here is the normal case on first
+run** — it lists exactly what is still bumped, which is the point.
+
+If the workload is managed by Argo CD or another GitOps controller, scaling it back by hand is
+reverted or fought over by the controller. Change it where the replica count is declared, and
+confirm the sync — see [[argocd-helm-ha-install]].
+
+This step is deliberately inside the procedure rather than in Follow-ups. It was a follow-up until
+2026-08-15, and in that form it survived two weekly reviews without being done.
+
+### Step 7 — hand back what pre-check 2 found
+
+Pre-check 2 produced a list of services whose PDB allowed zero disruptions. That list is the most
+useful thing this maintenance window generated, and it is worth more to the owning teams than to you
+— every one of those services will stall the next drain too.
+
+```bash
+kubectl get pdb -A -o custom-columns=\
+'NS:.metadata.namespace,NAME:.metadata.name,ALLOWED:.status.disruptionsAllowed,MIN:.spec.minAvailable,MAX:.spec.maxUnavailable'
+```
+
+Send the rows with `ALLOWED = 0` to the teams that own them, with what you had to do to work around
+each one. Doing this at the end of the window, while the detail is fresh, is the difference between
+a list someone acts on and a list someone rediscovers next quarter.
+
 ## Abort criteria (any one of these — stop and uncordon)
 
 - Drain past 15 minutes with no identified cause
@@ -172,13 +231,26 @@ After aborting, write down why. Aborting twice for the same reason is a problem 
 - [ ] New node's kubelet version, labels, and taints match the old one
 - [ ] DaemonSets show `DESIRED == READY`
 - [ ] Service dashboard error rate and p99 back to pre-maintenance levels
+- [ ] Every workload scaled up in pre-check 2 is back to its original count — `diff` against `replicas-before-<CHANGE_TICKET>.txt` is empty
+- [ ] For GitOps-managed workloads, the replica count is back **in Git**, not just in the cluster
 - [ ] Alert silence lifted
 - [ ] Change ticket closed with an end record
 
 ## Follow-ups
 
-- [ ] Scale back the workloads that were temporarily bumped to 2 replicas 📅 2026-08-08
-- [ ] Hand the teams the list of services that showed `ALLOWED DISRUPTIONS = 0`
+**Two items were removed from this list on 2026-08-15 because they were never follow-ups.** Scaling
+the workloads back, and handing the teams the `ALLOWED DISRUPTIONS = 0` list, are closing steps of
+this procedure — they belong to the maintenance window that created them, not to some later week.
+They are now step 6 and step 7, and the verification checklist fails without them.
+
+The scale-back from the 2026-08-07 run cannot be closed from here, and the reason is the defect this
+change fixes: **the run never recorded which workloads it scaled.** Anyone with access to that
+cluster should run the `diff` in step 6 against its current state; there is nothing in this
+repository to compare against. Whether that cluster still has bumped replicas is unknown, not
+resolved.
+
+- [ ] Confirm on the EKS cluster whether the 2026-08-07 window left workloads at 2 replicas, using step 6's `diff` against the live state 📅 2026-08-22
+- [ ] Decide whether pre-check 2's scale-up should be automated with the snapshot file, so the list cannot go unrecorded again
 
 ## Related
 
