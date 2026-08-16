@@ -213,7 +213,7 @@ that volume runs perfectly, so no workload-level check will catch it.
 ## Follow-ups
 
 - [x] Decide the standing answer to step 2 for this cluster and record it once — done 2026-08-09: taint kept, budget 2
-- [ ] Reconcile [[argocd-helm-ha-install]] with that decision. It still ships values with `redis-ha` enabled, which cannot schedule at a budget of 2, and its own text says "add nodes instead" 📅 2026-08-21
+- [x] Reconcile [[argocd-helm-ha-install]] with that decision — done 2026-08-09: its section 2.1 now carries the reduced values for a two-node budget, marked unverified until someone runs it
 - [ ] Run this before the next add-on install and set `verified` 📅 2026-09-30
 - [ ] Add the schedulable-node count to whatever inventory holds cluster facts, so it is not re-derived
 - [ ] Work out whether any add-on here can be given a control-plane toleration deliberately, rather than treating the budget as fixed
