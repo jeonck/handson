@@ -4,7 +4,7 @@ date: 2026-08-11
 domain: daily
 tags: [daily, observability, not-executed]
 stack: [kubernetes, prometheus, kind]
-summary: Stand up Prometheus on kind, confirm it's actually running the 3.13 LTS build, and try the two PromQL functions that release added — which stay silently broken without a feature flag nobody defaults on.
+summary: Stand up Prometheus on kind, confirm it's actually running the 3.13 LTS build, and try the two PromQL functions that release added — which stay silently broken without a feature flag nobody defaults on. Not executed — the scheduled run could not start a cluster, so the flag's effect is documented rather than watched.
 source: daily-topic
 ---
 

@@ -4,7 +4,7 @@ date: 2026-08-10
 domain: daily
 tags: [daily, gitops, delivery, not-executed]
 stack: [kubernetes, argocd, argo-rollouts, kind, ingress-nginx]
-summary: A Deployment goes to 100% of pods the moment the image tag changes. Swap it for a Rollout CRD and step through a canary with pauses, then check what it takes for Argo CD to treat that as a first-class resource.
+summary: A Deployment goes to 100% of pods the moment the image tag changes. Swap it for a Rollout CRD and step through a canary with pauses, then check what it takes for Argo CD to treat that as a first-class resource. Not executed — the scheduled run could not start a cluster, so every command here is transcribed from upstream documentation rather than observed.
 source: daily-topic
 ---
 

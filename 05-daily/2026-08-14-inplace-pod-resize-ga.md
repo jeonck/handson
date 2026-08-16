@@ -4,7 +4,7 @@ date: 2026-08-14
 domain: daily
 tags: [daily, container-orchestration, not-executed]
 stack: [kubernetes, kubectl, kind]
-summary: Resize a running Pod's CPU and memory without recreating it — GA and on by default since Kubernetes 1.35 — and see exactly which resource needs a restart to apply and which doesn't.
+summary: Resize a running Pod's CPU and memory without recreating it — GA and on by default since Kubernetes 1.35 — and see exactly which resource needs a restart to apply and which doesn't. Not executed — the scheduled run could not start a cluster, so which resource restarts is taken from the KEP rather than watched.
 source: daily-topic
 ---
 

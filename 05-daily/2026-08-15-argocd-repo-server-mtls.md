@@ -4,7 +4,7 @@ date: 2026-08-15
 domain: daily
 tags: [daily, gitops-and-delivery, not-executed]
 stack: [kubernetes, argocd, helm, kind]
-summary: Enable the new opt-in mTLS between argocd-server/controllers and argocd-repo-server shipped in Argo CD 3.5, and see exactly what it authenticates and what it still leaves wide open.
+summary: Enable the new opt-in mTLS between argocd-server/controllers and argocd-repo-server shipped in Argo CD 3.5, and see exactly what it authenticates and what it still leaves wide open. Not executed — the scheduled run could not start a cluster, so the gap described here is read from the source, not demonstrated.
 source: daily-topic
 ---
 

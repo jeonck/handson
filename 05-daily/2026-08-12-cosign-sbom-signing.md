@@ -4,7 +4,7 @@ date: 2026-08-12
 domain: daily
 tags: [daily, ci, not-executed]
 stack: [docker, cosign, syft]
-summary: Stand up a local registry, generate an SPDX SBOM with syft, sign the image and attach the SBOM as an attestation with cosign — then verify both with a public key, entirely offline.
+summary: Stand up a local registry, generate an SPDX SBOM with syft, sign the image and attach the SBOM as an attestation with cosign — then verify both with a public key, entirely offline. Not executed — the scheduled run could not run containers, so no signature here has been produced or verified.
 source: daily-topic
 ---
 
