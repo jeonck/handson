@@ -25,9 +25,10 @@ and it records what this choice gives up. The short version: MinIO's open-source
 with an unpatched CVSS 8.8, Ceph does not fit in 4 GB per node, and Garage is built for deployments
 this size.
 
-> The comparison page's follow-up asking for a formal, dated decision between Garage and paid AIStor
-> is **still open**. Writing this document is not the same as closing it; buying AIStor remains a
-> live option and would make [[minio-object-storage-onprem]] mostly applicable again.
+> **The decision is recorded: Garage, 2026-08-16**, in that page's Decision section, with what it
+> accepts and what would reverse it. AIStor was rejected on cost rather than capability — if Garage
+> disappoints, that is the option to revisit first, and the evaluation behind it does not need
+> redoing.
 
 ## The two decisions this document makes for you
 

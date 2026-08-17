@@ -12,10 +12,13 @@ duration: 60–90 min
 risk: medium
 ---
 
-> **Read [[s3-object-storage-options]] first.** That page compares this product against Rook/Ceph
-> and Garage for this cluster, and recommends against MinIO on the strength of the §0 finding
-> below. This document stays as the record of the MinIO investigation and is still accurate;
-> it is no longer the default answer.
+> **Superseded as the default answer, 2026-08-16.** [[s3-object-storage-options]] compared this
+> product against Rook/Ceph and Garage for this cluster and **decided on Garage** — see
+> [[garage-object-storage-onprem]] — on the strength of the §0 finding below.
+>
+> This document stays, and stays accurate. It is the record of the MinIO investigation, and it is
+> what you come back to if AIStor is ever bought: that path was rejected on cost, not on capability,
+> so most of what follows would apply again unchanged.
 >
 > ⚠️ **Nothing in this document has been run.** It was assembled on 2026-08-16 from MinIO's own
 > documentation, the archived `minio/minio` and `minio/operator` repositories, and MinIO's published

@@ -4,7 +4,7 @@ date: 2026-08-16
 domain: reference
 tags: [storage, object-storage, s3, decision]
 stack: [kubernetes, minio, ceph, rook, garage, longhorn]
-summary: MinIO's open-source line was archived in April 2026, so the S3 endpoint under Trino, Spark, Airflow and the database backups needs deciding again. Ceph does not fit in 4 GB per node. Garage does — and then gives exactly the same write-availability on two nodes that MinIO does, because the binding constraint is the node count, not the product.
+summary: MinIO's open-source line was archived in April 2026, so the S3 endpoint under Trino, Spark, Airflow and the database backups had to be decided again. Ceph does not fit in 4 GB per node; Garage does, and gives the same write-availability on two nodes that MinIO does, because the binding constraint is the node count rather than the product. Decided 2026-08-16: Garage.
 source: handson
 verified:
 ---
@@ -174,6 +174,39 @@ elsewhere" check has to be rewritten against a different mechanism, not merely r
 
 ---
 
+## Decision — 2026-08-16
+
+> **Garage. Not MinIO, not AIStor, not Ceph.**
+>
+> One instance at `replication_factor 1` on a Longhorn volume, with Longhorn owning redundancy.
+> Procedure in [[garage-object-storage-onprem]].
+>
+> **Why, in one line each:** MinIO's free line is archived with an unpatched CVSS 8.8 and its
+> successor tier cannot legally run distributed; Ceph does not fit in 4 GB per node and would not
+> fit with a fourth identical machine either; Garage is actively released, AGPLv3, and its S3 gaps
+> miss every consumer in this stack.
+>
+> **AIStor was considered and rejected on cost, not capability.** Buying it would make MinIO a
+> supported, patched product again and [[minio-object-storage-onprem]] would mostly still apply.
+> That is the option to revisit first if Garage disappoints — the evaluation does not need redoing.
+>
+> **What this accepts, knowingly:**
+>
+> - No object versioning, so nothing at the S3 layer recovers an overwrite or a mistaken delete
+> - No bucket policies — access scoping goes through Garage's per-key model, so the scoped-key
+>   procedure from the MinIO document has to be rewritten rather than re-pointed
+> - Lifecycle limited to `Expiration`, so any other retention rule is unenforced
+> - Replication factor 1 is labelled test-only by upstream. Taken deliberately because Longhorn is
+>   already replicating underneath — a decision to re-make if the storage layer ever changes
+> - A node loss is an outage, then full service. It is not a seamless failover, and no product
+>   choice available on two nodes would have made it one
+>
+> **What reverses this:** a third schedulable node — which fixes the underlying write-availability
+> problem rather than working around it — or a Garage failure serious enough to be worth paying for
+> AIStor. Not a new release, and not a benchmark.
+>
+> Nothing has been installed. This records which way to go, not that anyone went.
+
 ## Recommendation
 
 **Garage, at `replication_factor 1`, on a Longhorn volume — with the redundancy left to Longhorn.**
@@ -203,7 +236,7 @@ What would change the recommendation:
 
 ## Follow-ups
 
-- [ ] Decide between Garage and paid AIStor and record the decision with its date, the way the taint decision is recorded in [[schedulable-node-budget]] 📅 2026-08-30
+- [x] Decide between Garage and paid AIStor and record the decision with its date — done 2026-08-16, see the Decision section above
 - [x] If Garage: write the install guide — done 2026-08-16, [[garage-object-storage-onprem]]. It rewrites the scoped-access-key check against `bucket allow` rather than bucket policies, since Garage implements none of the policy endpoints
 - [ ] Confirm by testing, not by reading, that barman-cloud and Longhorn's backupstore work against Garage — both are inferred above from an endpoint table, and a backup target that fails is worth less than no backup target
 - [ ] Re-check whether Rook still supports Kubernetes 1.31 before any future reconsideration — 1.31 is at the bottom of its stated window
