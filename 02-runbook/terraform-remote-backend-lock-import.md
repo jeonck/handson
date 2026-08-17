@@ -4,29 +4,30 @@ date: 2026-08-16
 domain: runbook
 tags: [iac, terraform, state, backend]
 stack: [terraform, opentofu, nodejs]
-summary: The two things a local backend cannot teach — importing into shared state, and a lock held by somebody else — rehearsed against a real remote backend you can run in one terminal. The remote lock error names the holder; force-unlock is still the wrong first move.
+summary: The two things a local backend cannot teach — importing into shared state, and a lock held by somebody else — rehearsed against two remote backends you can run in one terminal. On S3 the lock is a conditional PUT, and the refusal arrives as a 412 rather than anything about locking.
 source: handson
-env: Terraform 1.15.7 (darwin_arm64) · hashicorp/time 0.14.1 · Terraform http backend served by a 60-line Node 24.10 process on localhost — not S3, not DynamoDB, not Terraform Cloud
-verified: 2026-08-16
+env: Terraform 1.15.7 (darwin_arm64) · hashicorp/time 0.14.1 · two backends, both served by a small Node 24.10 process on localhost — the http backend, and an S3 endpoint implementing only what the s3 backend calls. Not AWS S3, not DynamoDB, not Terraform Cloud
+verified: 2026-08-17
 verifiability: partial
-verifiability-note: Verified against the http backend, which exercises Terraform's own lock protocol end to end and lets the server side be observed. S3 conditional-write locking and DynamoDB lock tables fail differently on the storage side and stay untested.
+verifiability-note: Both backends exercise Terraform's own code paths end to end, including the S3 conditional-write lock. What is untested is AWS itself — IAM, real S3 semantics, bucket versioning — and the DynamoDB lock table that most existing setups still use.
 duration: 20–30 min
 risk: medium
 ---
 
-> **Verified 2026-08-16.** Every command, every error and every server log line below was produced on
+> **Verified 2026-08-17.** Every command, every error and every server log line below was produced on
 > Terraform 1.15.7. The two gaps left open by [[terraform-state-operations]] — `import`, and lock
-> behaviour on a remote backend — are closed here for the http backend.
+> behaviour on a remote backend — are closed, on **both** the http backend and the s3 backend.
 >
-> **Why not S3.** The intent was MinIO as an S3 endpoint. Its binary is ~108 MB and the download
-> stalled twice on this connection, at 54 MB and 65 MB. Rather than write S3 sections from
-> documentation and call the document verified, the lab moved to the http backend, which needs
-> nothing but Node. What that does and does not carry over is in
-> [What S3 and DynamoDB do differently](#what-s3-and-dynamodb-do-differently).
+> **The S3 endpoint is a local stub, deliberately.** What is under test is Terraform's s3 backend —
+> its lock protocol and its import path — not an object store. A Node process implementing only the
+> calls that backend makes turns out to be enough to exercise all of it, including the
+> conditional-write lock. Which S3 implementation this cluster actually runs is a separate question,
+> already decided in [[s3-object-storage-options]] and installed in [[garage-object-storage-onprem]].
+> See [What is still untested](#what-is-still-untested).
 
 A local backend teaches you almost everything about state except the two things that actually hurt in a team: adopting existing infrastructure into shared state, and finding the state locked by somebody who is not you.
 
-Both need a backend that lives outside your process. This lab uses Terraform's **http backend** — an official backend whose entire protocol is four HTTP methods, which means you can watch the lock being taken and refused instead of inferring it.
+Both need a backend that lives outside your process. This lab uses two, in order: the **http backend**, whose entire protocol is four HTTP methods, and then the **s3 backend**, which is what teams actually run. Serving both locally means the lock can be watched being granted and refused instead of inferred — and the two refuse in visibly different ways.
 
 ## The lab
 
@@ -329,14 +330,265 @@ The legitimate uses are narrow: a backend with no locking support, or a read-onl
 
 ---
 
-## What S3 and DynamoDB do differently
+## 6. The same thing on the s3 backend
 
-Not verified here. Named so nobody assumes this lab covers it:
+The http backend shows the protocol. The s3 backend is what runs in production, and its lock is a
+different mechanism: **a conditional PUT**, not a dedicated verb.
 
-- **Where the lock lives.** S3 with `use_lockfile = true` writes a lock object next to the state and relies on conditional writes; the classic setup uses a DynamoDB item instead. Both can leave the lock behind when a process dies, exactly like section 4, but you clear it with `force-unlock` *or* by deleting the object/item directly — and knowing which is safe requires seeing the storage.
-- **How failures present.** A refused lock on S3 surfaces as a `PreconditionFailed`-flavoured error rather than a clean 423; a missing DynamoDB table looks like a permissions problem.
-- **Versioning.** An S3 bucket with versioning gives you every prior state, which changes the rollback advice in [[terraform-state-operations]] from "take a pull first" to "take a pull first and know the version id".
-- **Credentials.** Nothing in this lab exercises IAM, and most real remote-backend incidents are permissions, not locks.
+The endpoint below implements only the calls the s3 backend makes. It is a lab prop — signatures are
+accepted unverified — but the Terraform side of it is entirely real.
+
+```javascript title="s3-server.mjs"
+// Minimal S3 endpoint, just enough for Terraform's s3 backend with use_lockfile = true.
+// Node standard library only. Signatures are not verified — this is a lab, not a service.
+import { createServer } from "node:http";
+import { createHash } from "node:crypto";
+
+const objects = new Map(); // key -> Buffer
+const etag = (buf) => '"' + createHash("md5").update(buf).digest("hex") + '"';
+
+const xml = (res, code, body) => {
+  res.writeHead(code, { "Content-Type": "application/xml" });
+  res.end(`<?xml version="1.0" encoding="UTF-8"?>${body}`);
+};
+
+const readBody = (req) =>
+  new Promise((resolve) => {
+    const chunks = [];
+    req.on("data", (c) => chunks.push(c));
+    req.on("end", () => resolve(Buffer.concat(chunks)));
+  });
+
+createServer(async (req, res) => {
+  const url = new URL(req.url, "http://localhost");
+  // path-style: /<bucket>/<key...>
+  const [, bucket, ...rest] = url.pathname.split("/");
+  const key = rest.join("/");
+  const body = await readBody(req);
+  const log = (code, note = "") =>
+    console.log(
+      `${new Date().toISOString().slice(11, 19)} ${req.method.padEnd(6)} /${bucket}/${key || ""} -> ${code} ${note}`
+    );
+
+  // HeadBucket / HeadObject
+  if (req.method === "HEAD") {
+    if (!key) return log(200, "bucket") || res.writeHead(200).end();
+    const o = objects.get(key);
+    if (!o) return log(404) || res.writeHead(404).end();
+    log(200);
+    res.writeHead(200, { ETag: etag(o), "Content-Length": o.length }).end();
+    return;
+  }
+
+  if (req.method === "GET") {
+    if (!key || url.searchParams.has("list-type")) {
+      const contents = [...objects.entries()]
+        .map(([k, v]) => `<Contents><Key>${k}</Key><Size>${v.length}</Size></Contents>`)
+        .join("");
+      log(200, "list");
+      return xml(res, 200, `<ListBucketResult><Name>${bucket}</Name>${contents}</ListBucketResult>`);
+    }
+    const o = objects.get(key);
+    if (!o) {
+      log(404, "NoSuchKey");
+      return xml(res, 404, `<Error><Code>NoSuchKey</Code><Key>${key}</Key></Error>`);
+    }
+
+    // The AWS SDK downloads with ranged GETs (ft/s3-transfer). A stub that ignores Range
+    // and answers 200 with the whole body every time never tells the client how large the
+    // object is, so it keeps asking for the next range forever. Answer 206 with
+    // Content-Range, and 416 once the range starts past the end.
+    const range = req.headers.range && /bytes=(\d+)-(\d*)/.exec(req.headers.range);
+    if (range) {
+      const start = Number(range[1]);
+      if (start >= o.length) {
+        log(416, `range ${req.headers.range}`);
+        res.writeHead(416, { "Content-Range": `bytes */${o.length}` }).end();
+        return;
+      }
+      const end = range[2] ? Math.min(Number(range[2]), o.length - 1) : o.length - 1;
+      const slice = o.subarray(start, end + 1);
+      log(206, `bytes ${start}-${end}/${o.length}`);
+      res.writeHead(206, {
+        ETag: etag(o),
+        "Content-Type": "application/json",
+        "Content-Length": slice.length,
+        "Content-Range": `bytes ${start}-${end}/${o.length}`,
+      }).end(slice);
+      return;
+    }
+
+    log(200, `${o.length} bytes`);
+    res.writeHead(200, {
+      ETag: etag(o),
+      "Content-Type": "application/json",
+      "Content-Length": o.length,
+    }).end(o);
+    return;
+  }
+
+  if (req.method === "PUT") {
+    // This one line is the whole lock: S3 conditional write. Terraform sends
+    // If-None-Match: * for the .tflock object, so a second writer gets 412 instead
+    // of silently overwriting the first one's lock.
+    if (req.headers["if-none-match"] === "*" && objects.has(key)) {
+      log(412, "PreconditionFailed");
+      return xml(res, 412, `<Error><Code>PreconditionFailed</Code><Key>${key}</Key></Error>`);
+    }
+    objects.set(key, body);
+    log(200, `${body.length} bytes`);
+    res.writeHead(200, { ETag: etag(body) }).end();
+    return;
+  }
+
+  if (req.method === "DELETE") {
+    objects.delete(key);
+    log(204);
+    res.writeHead(204).end();
+    return;
+  }
+
+  if (req.method === "POST") {
+    log(200, "post ignored");
+    res.writeHead(200).end();
+    return;
+  }
+
+  log(501, req.method);
+  res.writeHead(501).end();
+}).listen(9000, () => console.log("s3 endpoint on http://127.0.0.1:9000"));
+```
+
+```hcl title="versions.tf"
+terraform {
+  required_version = ">= 1.11.0"
+
+  backend "s3" {
+    bucket       = "tfstate"
+    key          = "lab/terraform.tfstate"
+    region       = "us-east-1"
+    use_lockfile = true          # the lock is an object, no DynamoDB table
+
+    endpoints                   = { s3 = "http://127.0.0.1:9000" }
+    use_path_style              = true
+    access_key                  = "lab"
+    secret_key                  = "labsecret"
+    skip_credentials_validation = true
+    skip_metadata_api_check     = true
+    skip_region_validation      = true
+    skip_requesting_account_id  = true
+    skip_s3_checksum            = true
+  }
+}
+```
+
+```bash
+node s3-server.mjs &
+terraform init -reconfigure
+terraform apply -auto-approve
+```
+
+The server log shows the lock as an object with a lifetime:
+
+```
+13:51:27 PUT    /tfstate/lab/terraform.tfstate.tflock -> 200 221 bytes
+13:51:27 HEAD   /tfstate/lab/terraform.tfstate -> 200
+13:51:27 GET    /tfstate/lab/terraform.tfstate -> 206 bytes 0-180/181
+13:51:57 PUT    /tfstate/lab/terraform.tfstate -> 200 1337 bytes
+13:51:57 GET    /tfstate/lab/terraform.tfstate.tflock -> 200 221 bytes
+13:51:57 DELETE /tfstate/lab/terraform.tfstate.tflock -> 204
+```
+
+`<key>.tflock` next to the state, taken before the write and deleted after. **If a run dies between
+those two lines, that object is what remains** — which is the whole of section 4, in a form you can
+see with `aws s3 ls`.
+
+### The refusal is a 412, and it does not mention locking
+
+Race two operations exactly as before:
+
+```bash
+terraform apply -auto-approve &
+sleep 8
+terraform plan -lock-timeout=0
+```
+
+```
+Error: Error acquiring the state lock
+
+Error message: operation error S3: PutObject, https response error
+StatusCode: 412, RequestID: , HostID: , api error PreconditionFailed:
+UnknownError
+Lock Info:
+  ID:        32ca8de1-e88d-7eec-4b18-1feeb3cf7016
+  Path:      tfstate/lab/terraform.tfstate
+  Operation: OperationTypeApply
+  Who:       mac@Macui-MacBookPro.local
+  Version:   1.15.7
+```
+
+Two differences from the http backend worth carrying in your head:
+
+- **The error names an HTTP status, not a lock.** `412 PreconditionFailed` is S3 refusing to create
+  an object that already exists. Searching that string leads to S3 documentation about conditional
+  writes, not to Terraform locking — and on a bad day that is a long detour.
+- **`Path` is populated** — `tfstate/lab/terraform.tfstate` — where the http backend left it empty.
+  That is the field that tells you which state file, in which bucket, is actually locked.
+
+Server-side the mechanism is two lines:
+
+```
+13:57:10 PUT    /tfstate/lab/terraform.tfstate.tflock -> 412 PreconditionFailed
+13:57:10 GET    /tfstate/lab/terraform.tfstate.tflock -> 200 220 bytes
+```
+
+The conditional PUT is refused, then Terraform **reads the existing lock object** to tell you who
+holds it. That second request is where `Who` and `Created` in the error come from.
+
+### force-unlock deletes the object
+
+```bash
+terraform force-unlock stale-from-a-killed-ci-runner
+```
+
+```
+13:58:37 GET    /tfstate/lab/terraform.tfstate.tflock -> 200 182 bytes
+13:58:37 DELETE /tfstate/lab/terraform.tfstate.tflock -> 204
+```
+
+It reads the lock first to check the ID you supplied matches, then deletes. Which also means the
+manual escape hatch on a real bucket is `aws s3 rm s3://<bucket>/<key>.tflock` — the same effect with
+none of the ID check, so prefer `force-unlock` and keep the raw delete for when the CLI cannot reach
+the backend at all.
+
+After `terraform destroy`, the state object remains and the lock object does not:
+
+```bash
+aws s3 ls s3://tfstate/lab/
+```
+
+```
+lab/terraform.tfstate
+```
+
+An empty state is not a deleted state. Removing the bucket object is a separate, deliberate act.
+
+---
+
+## What is still untested
+
+Narrower than before, and named so nobody assumes otherwise:
+
+- **Any real object store.** The endpoint is 90 lines of Node. The obvious next target is the Garage
+  instance from [[garage-object-storage-onprem]] — a real S3 implementation this cluster already
+  runs, which closes the storage side without needing AWS at all.
+- **AWS itself.** No IAM, no bucket policy, no encryption, no versioning. Most real remote-backend
+  incidents are permissions, and nothing here touches them. Bucket versioning in particular changes
+  the rollback advice in [[terraform-state-operations]] from "take a pull first" to "take a pull
+  first and know the version id".
+- **DynamoDB locking**, which most existing setups still use. `use_lockfile` is the newer mechanism;
+  a `dynamodb_table` lock fails differently again, and a missing table reads as a permissions error.
+- **Real S3 latency and eventual behaviour.** A localhost stub answers instantly and consistently.
 
 ## Verification checklist
 
@@ -368,7 +620,22 @@ The server holds state in memory, so stopping it discards everything. That is ri
 
 ## Where this bit us
 
-**The S3 plan died on bandwidth, not on Terraform.** Two attempts at the MinIO binary stopped at 54 MB and 65 MB of 108 MB. The choice was to write S3 sections from documentation and mark the document verified anyway, or to change the backend and say so. The second is why this document is about the http backend and why `verifiability` is `partial`.
+**The AWS SDK downloads state with ranged GETs, and a naive endpoint loops forever.** The first S3
+stub answered every GET with the whole object and a `200`. The SDK's transfer manager asks for byte
+ranges — `Range: bytes=749731840-754974719` and climbing — and with no `Content-Range` telling it the
+object's size it never learns there is nothing more to fetch. `terraform plan` hung, issuing a
+request every 1.5 seconds, with no error on either side. `TF_LOG=DEBUG` showed the climbing `Range`
+header, which was the whole diagnosis. Answer `206` with `Content-Range`, and `416` past the end.
+
+**The first plan was to point this at MinIO, which was the wrong answer twice over.** Its binary
+would not finish downloading here — two attempts stopped at 54 MB and 65 MB of 108 MB — and while
+that was being fought with, [[s3-object-storage-options]] had already recorded that MinIO's
+open-source line was archived in April 2026 and that this cluster runs Garage instead. Reading the
+repository's own decision first would have saved the download and pointed at a better target.
+
+**`timeout` is not on macOS.** `timeout 60 terraform apply` exits 127, and piped into a `grep` that
+looks exactly like a command that produced no output. Two runs were misread as hangs before the exit
+code was checked. Use `gtimeout` from coreutils, or background the command and wait on a condition.
 
 **`Path:` empty in the lock info read as a broken backend** for a minute, until the http backend turned out to have nothing to put there. Documented at the point it appears, because the instinct is to go and check the backend block.
 
@@ -376,10 +643,16 @@ The server holds state in memory, so stopping it discards everything. That is ri
 
 ## Follow-ups
 
+- [x] Repeat sections 2–5 against the s3 backend with `use_lockfile = true` — done 2026-08-17, section 6
+- [ ] Point the same lab at the Garage endpoint from [[garage-object-storage-onprem]], so the storage side is a real implementation rather than a stub 📅 2026-09-30
+- [ ] Run it once against a real AWS bucket, for IAM and versioning
+- [ ] Repeat against DynamoDB locking, which is still what most existing setups use
 - [ ] Write down the team rule for `force-unlock`: who may run it, and what evidence of a dead holder is required first
 - [ ] Check whether the CI pipeline passes `-lock=false` anywhere, and remove it if so
 
 ## Related
 
 [[terraform-state-operations]] — the local-backend rehearsal this extends. It named `import` and remote locking as the two things it could not cover; both are covered here for the http backend.
+[[s3-object-storage-options]] — which S3 implementation this cluster runs, and why it is not MinIO.
+[[garage-object-storage-onprem]] — the endpoint to point this lab at next.
 [[topics]] — IaC state operations is in scope there.

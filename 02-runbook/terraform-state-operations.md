@@ -285,7 +285,7 @@ for additional information.
 
 `local_file` and `random_pet` both produce that, so an `import` block cannot be practised without a real API behind it. Worth knowing in itself: **import support is per-resource, not a Terraform feature you can assume.** Check the provider's documentation for the resource before planning an adoption; discovering this during a migration is expensive.
 
-**Remote backend locking.** The local backend takes a file lock, and the error above is what that produces. S3 with DynamoDB, or Terraform Cloud, fail differently and can leave a lock behind when a runner is killed — which is the situation `force-unlock` exists for and the one this lab never reaches. [[terraform-remote-backend-lock-import]] closes this for a real remote backend, including a stale lock and `force-unlock`; S3 and DynamoDB specifically are still untested.
+**Remote backend locking.** The local backend takes a file lock, and the error above is what that produces. S3 with DynamoDB, or Terraform Cloud, fail differently and can leave a lock behind when a runner is killed — which is the situation `force-unlock` exists for and the one this lab never reaches. [[terraform-remote-backend-lock-import]] closes this on both the http and s3 backends, including a stale lock and `force-unlock`; on S3 the refusal arrives as a `412 PreconditionFailed`. DynamoDB locking is still untested.
 
 ---
 
