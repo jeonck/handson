@@ -5,6 +5,14 @@ const $$ = (s, r = document) => [...r.querySelectorAll(s)];
 const esc = (s) =>
   String(s).replace(/[&<>"']/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
 
+// Follow-up text is markdown in the source document, so `**bold**` and `code`
+// were reaching the dashboard as literal asterisks and backticks. Escape first,
+// then re-introduce only those two — nothing here can produce a tag from input.
+const inlineMd = (s) =>
+  esc(s)
+    .replace(/\*\*([^*]+)\*\*/g, "<b>$1</b>")
+    .replace(/`([^`]+)`/g, "<code>$1</code>");
+
 const TODAY = new Date().toISOString().slice(0, 10);
 let DB = null;
 const noteCache = new Map();
@@ -103,10 +111,10 @@ function noteCard(n) {
 }
 
 function taskRow(t) {
-  return `<a class="task" href="#/note/${encodeURIComponent(t.note)}">
+  return `<a class="task" href="#/note/${encodeURIComponent(t.note)}" title="${esc(t.text)}">
     <span class="box"></span>
     <span class="body">
-      <span>${esc(t.text)}</span>
+      <span class="txt">${inlineMd(t.text)}</span>
       <span class="meta">
         ${t.due ? `<span class="due ${dueClass(t.due)}">📅 ${dueLabel(t.due)}</span>` : `<span>no due date</span>`}
         <span>${esc(t.noteTitle)}</span>
@@ -184,10 +192,15 @@ function viewDashboard() {
     <div class="panel">
       <div class="section-head" style="margin:0 0 12px"><h2>Categories</h2></div>
       <div class="folders">${folderBars}</div>
-      <div class="section-head" style="margin:20px 0 10px"><h2>Follow-ups</h2><span class="spacer"></span><a class="more" href="#/tasks">All</a></div>
-      ${tasks.length ? `<div class="tasklist">${tasks.map(taskRow).join("")}</div>` : `<p class="empty" style="color:var(--ink-3);font-size:12.5px;margin:0">No open follow-ups.</p>`}
     </div>
   </div>
+
+  <div class="section-head"><h2>Follow-ups</h2><span class="hint">${s.tasksOpen} open</span><span class="spacer"></span><a class="more" href="#/tasks">All</a></div>
+  ${
+    tasks.length
+      ? `<div class="tasklist wide">${tasks.map(taskRow).join("")}</div>`
+      : `<p class="empty-state" style="padding:24px">No open follow-ups.</p>`
+  }
 
   ${
     s.gapList.length
@@ -285,7 +298,7 @@ function viewTasks() {
   const group = (title, hint, items) =>
     items.length
       ? `<div class="section-head"><h2>${title}</h2><span class="hint">${items.length} ${hint}</span></div>
-         <div class="tasklist">${items.map(taskRow).join("")}</div>`
+         <div class="tasklist wide">${items.map(taskRow).join("")}</div>`
       : "";
 
   return `
