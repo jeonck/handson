@@ -18,6 +18,14 @@ verified:
 investigation. This document is the step before it: **whether MinIO should still be the answer**, and
 what the alternatives actually cost on the hardware this cluster has.
 
+> **Since this was written — one measured constraint.** Garage 2.3.0 accepts a `PUT` carrying
+> `If-None-Match: *` that a compliant S3 must refuse, so Terraform's `use_lockfile` provides **no
+> state locking** on it: two applies both take the lock and the first fails on release. Measured
+> 2026-08-17 with a probe in [[terraform-remote-backend-lock-import]] §7, which passes against a
+> compliant endpoint and fails here. It does not affect the workloads this decision was made for —
+> Trino, Spark, Airflow, barman-cloud and Longhorn backups need no conditional writes — but
+> Terraform state must not live here while that holds.
+
 ## Why this is being asked again
 
 The MinIO document's own section 0 found that the open-source line is finished:

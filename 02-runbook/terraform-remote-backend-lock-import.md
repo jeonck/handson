@@ -4,19 +4,24 @@ date: 2026-08-16
 domain: runbook
 tags: [iac, terraform, state, backend]
 stack: [terraform, opentofu, nodejs]
-summary: The two things a local backend cannot teach — importing into shared state, and a lock held by somebody else — rehearsed against two remote backends you can run in one terminal. On S3 the lock is a conditional PUT, and the refusal arrives as a 412 rather than anything about locking.
+summary: Importing into shared state and a lock held by somebody else, rehearsed against three remote backends you can run in one terminal. On S3 the lock is one conditional PUT — and on Garage that header is ignored, so use_lockfile hands you a lock that never refuses anyone.
 source: handson
-env: Terraform 1.15.7 (darwin_arm64) · hashicorp/time 0.14.1 · two backends, both served by a small Node 24.10 process on localhost — the http backend, and an S3 endpoint implementing only what the s3 backend calls. Not AWS S3, not DynamoDB, not Terraform Cloud
+env: Terraform 1.15.7 (darwin_arm64) · hashicorp/time 0.14.1 · three backends on localhost — the http backend and an S3 stub, both small Node 24.10 processes, plus Garage 2.3.0 in Podman (single node, replication factor 1). Not AWS S3, not DynamoDB, not Terraform Cloud
 verified: 2026-08-17
 verifiability: partial
-verifiability-note: Both backends exercise Terraform's own code paths end to end, including the S3 conditional-write lock. What is untested is AWS itself — IAM, real S3 semantics, bucket versioning — and the DynamoDB lock table that most existing setups still use.
+verifiability-note: All three backends exercise Terraform's own code paths end to end, including the S3 conditional-write lock and its failure on Garage. What is untested is AWS itself — IAM, versioning, real S3 semantics — and the DynamoDB lock table that most existing setups still use.
 duration: 20–30 min
 risk: medium
 ---
 
 > **Verified 2026-08-17.** Every command, every error and every server log line below was produced on
 > Terraform 1.15.7. The two gaps left open by [[terraform-state-operations]] — `import`, and lock
-> behaviour on a remote backend — are closed, on **both** the http backend and the s3 backend.
+> behaviour on a remote backend — are closed on the http backend, on an S3 stub, and on **Garage**,
+> the endpoint this cluster actually runs.
+>
+> **The Garage run found something.** `use_lockfile` provides no mutual exclusion there: Garage 2.3.0
+> accepts a conditional `PUT` that should be refused, so two applies both take the lock and the first
+> one fails on release. Section 7, with a probe you can point at any endpoint.
 >
 > **The S3 endpoint is a local stub, deliberately.** What is under test is Terraform's s3 backend —
 > its lock protocol and its import path — not an object store. A Node process implementing only the
@@ -27,7 +32,7 @@ risk: medium
 
 A local backend teaches you almost everything about state except the two things that actually hurt in a team: adopting existing infrastructure into shared state, and finding the state locked by somebody who is not you.
 
-Both need a backend that lives outside your process. This lab uses two, in order: the **http backend**, whose entire protocol is four HTTP methods, and then the **s3 backend**, which is what teams actually run. Serving both locally means the lock can be watched being granted and refused instead of inferred — and the two refuse in visibly different ways.
+Both need a backend that lives outside your process. This lab uses three, in order: the **http backend**, whose entire protocol is four HTTP methods; the **s3 backend** against a stub, which is what teams actually run; and then **Garage**, which is what this cluster runs. Serving all three locally means the lock can be watched being granted and refused instead of inferred — and the third one never refuses at all.
 
 ## The lab
 
@@ -575,13 +580,209 @@ An empty state is not a deleted state. Removing the bucket object is a separate,
 
 ---
 
+## 7. The same thing on Garage — where the lock quietly is not one
+
+[[garage-object-storage-onprem]] is the S3 endpoint this cluster actually runs, so the obvious next
+step was to point the same lab at it instead of a stub. Garage 2.3.0, one node, replication factor 1,
+a `tfstate` bucket and a key with `RWO`.
+
+```bash
+podman run -d --name garage -p 3900:3900 \
+  -v "$PWD/garage.toml:/etc/garage.toml:ro,Z" docker.io/dxflrs/garage:v2.3.0
+podman exec garage /garage layout assign -z dc1 -c 1G <NODE_ID>
+podman exec garage /garage layout apply --version 1
+podman exec garage /garage bucket create tfstate
+podman exec garage /garage key create tf-key
+podman exec garage /garage bucket allow --read --write --owner tfstate --key tf-key
+```
+
+```hcl title="versions.tf"
+terraform {
+  backend "s3" {
+    bucket       = "tfstate"
+    key          = "lab/terraform.tfstate"
+    region       = "garage"          # Garage's s3_region, not an AWS region
+    use_lockfile = true
+
+    endpoints                   = { s3 = "http://127.0.0.1:3900" }
+    use_path_style              = true
+    skip_credentials_validation = true
+    skip_metadata_api_check     = true
+    skip_region_validation      = true
+    skip_requesting_account_id  = true
+  }
+}
+```
+
+Credentials come from `AWS_ACCESS_KEY_ID` / `AWS_SECRET_ACCESS_KEY` — the key Garage printed at
+creation. Do not put them in the backend block; this file is committed.
+
+**State and import work exactly as on any S3.** `init` migrates, and the import lands:
+
+```
+Apply complete! Resources: 1 imported, 0 added, 1 changed, 0 destroyed.
+```
+
+```bash
+podman exec garage /garage bucket info tfstate
+```
+
+```
+Objects:         1
+```
+
+### The lock does not hold
+
+Run the same race from section 6 — a slow apply, then a second command:
+
+```bash
+terraform apply -auto-approve &
+sleep 8
+terraform plan -lock-timeout=0
+```
+
+```
+No changes. Your infrastructure matches the configuration.
+```
+
+**No lock error.** The second command took the lock and produced a plan while the first was still
+running. The lock object is genuinely there while it happens:
+
+```bash
+podman exec garage /garage bucket info tfstate     # during the apply
+```
+
+```
+Objects:         2
+```
+
+State plus `.tflock` — and Terraform created its own on top anyway. The first apply then fails on the
+way out, because the object it expects to delete is the one the second command already removed:
+
+```
+Error: Error releasing the state lock
+
+Error message: unable to retrieve file from S3 bucket 'tfstate' with key
+'lab/terraform.tfstate.tflock': operation error S3: GetObject, https response
+error StatusCode: 404, RequestID: , HostID: , NoSuchKey: Key not found
+```
+
+That message is the only sign anything was wrong, it arrives after the damage, and it reads like a
+transient S3 problem.
+
+### Isolating it: the endpoint ignores `If-None-Match`
+
+Terraform's lock is one HTTP header. This probe sends it twice, signing with SigV4, and reports what
+came back — no Terraform involved:
+
+```javascript title="conditional-put-test.mjs"
+// Does this S3 endpoint enforce `If-None-Match: *` on PutObject?
+// That single header is what Terraform's `use_lockfile` relies on: the second writer must
+// be refused with 412, or two runs both believe they hold the state lock.
+//
+// Usage: AWS_ACCESS_KEY_ID=... AWS_SECRET_ACCESS_KEY=... node conditional-put-test.mjs \
+//          http://127.0.0.1:3900 <bucket> <region>
+import { createHash, createHmac } from "node:crypto";
+
+const [endpoint, bucket, region] = process.argv.slice(2);
+const KEY = process.env.AWS_ACCESS_KEY_ID;
+const SECRET = process.env.AWS_SECRET_ACCESS_KEY;
+const objectKey = `conditional-put-probe-${Date.now()}`;
+
+const sha256 = (s) => createHash("sha256").update(s).digest("hex");
+const hmac = (k, s) => createHmac("sha256", k).update(s).digest();
+
+function sign({ method, host, path, body, headers }) {
+  const now = new Date();
+  const amzDate = now.toISOString().replace(/[-:]|\.\d{3}/g, "");
+  const date = amzDate.slice(0, 8);
+  const payloadHash = sha256(body);
+
+  const all = { host, "x-amz-content-sha256": payloadHash, "x-amz-date": amzDate, ...headers };
+  const names = Object.keys(all).map((h) => h.toLowerCase()).sort();
+  const canonicalHeaders = names.map((h) => `${h}:${String(all[Object.keys(all).find((k) => k.toLowerCase() === h)]).trim()}\n`).join("");
+  const signedHeaders = names.join(";");
+
+  const canonicalRequest = [method, path, "", canonicalHeaders, signedHeaders, payloadHash].join("\n");
+  const scope = `${date}/${region}/s3/aws4_request`;
+  const stringToSign = ["AWS4-HMAC-SHA256", amzDate, scope, sha256(canonicalRequest)].join("\n");
+
+  let k = hmac(`AWS4${SECRET}`, date);
+  for (const part of [region, "s3", "aws4_request"]) k = hmac(k, part);
+  const signature = createHmac("sha256", k).update(stringToSign).digest("hex");
+
+  return {
+    ...all,
+    Authorization: `AWS4-HMAC-SHA256 Credential=${KEY}/${scope}, SignedHeaders=${signedHeaders}, Signature=${signature}`,
+  };
+}
+
+async function conditionalPut(n) {
+  const body = `attempt ${n}\n`;
+  const path = `/${bucket}/${objectKey}`;
+  const host = new URL(endpoint).host;
+  const headers = sign({ method: "PUT", host, path, body, headers: { "if-none-match": "*" } });
+  const res = await fetch(`${endpoint}${path}`, { method: "PUT", headers, body });
+  console.log(`PUT #${n} with If-None-Match: *  ->  ${res.status} ${res.statusText}`);
+  return res.status;
+}
+
+const first = await conditionalPut(1);
+const second = await conditionalPut(2);
+
+console.log("");
+if (first === 200 && second === 412) {
+  console.log("PASS  conditional writes are enforced — use_lockfile has a real lock here");
+} else if (first === 200 && second === 200) {
+  console.log("FAIL  the second write was accepted. If-None-Match is ignored,");
+  console.log("      so use_lockfile provides no mutual exclusion on this endpoint.");
+} else {
+  console.log(`UNCLEAR  first=${first} second=${second}`);
+}
+```
+
+Against Garage 2.3.0:
+
+```
+PUT #1 with If-None-Match: *  ->  200 OK
+PUT #2 with If-None-Match: *  ->  200 OK
+
+FAIL  the second write was accepted. If-None-Match is ignored,
+      so use_lockfile provides no mutual exclusion on this endpoint.
+```
+
+Against the stub from section 6, which does enforce it:
+
+```
+PUT #1 with If-None-Match: *  ->  200 OK
+PUT #2 with If-None-Match: *  ->  412 Precondition Failed
+
+PASS  conditional writes are enforced — use_lockfile has a real lock here
+```
+
+**The probe passes somewhere and fails somewhere**, which is what makes it worth keeping. Run it
+against any S3-compatible endpoint before trusting `use_lockfile` on it — it costs one command and
+the alternative is finding out during a concurrent apply.
+
+> Garage's own documentation could not be reached from this machine (`garagehq.deb.rs` did not
+> resolve), so whether this is a documented gap or a bug is unconfirmed. What is confirmed is the
+> behaviour of 2.3.0 on 2026-08-17.
+
+### What to do about it
+
+- **Do not put Terraform state on Garage and rely on `use_lockfile`.** It silently gives you nothing.
+- Keep state where the lock works — the http backend above, or a real S3/DynamoDB — and let Garage
+  serve the workloads it was chosen for. Nothing else in [[s3-object-storage-options]] depends on
+  conditional writes.
+- If state must live on Garage, the lock has to come from somewhere else, and "we are careful about
+  not applying at the same time" is not a lock.
+
+---
+
 ## What is still untested
 
 Narrower than before, and named so nobody assumes otherwise:
 
-- **Any real object store.** The endpoint is 90 lines of Node. The obvious next target is the Garage
-  instance from [[garage-object-storage-onprem]] — a real S3 implementation this cluster already
-  runs, which closes the storage side without needing AWS at all.
 - **AWS itself.** No IAM, no bucket policy, no encryption, no versioning. Most real remote-backend
   incidents are permissions, and nothing here touches them. Bucket versioning in particular changes
   the rollback advice in [[terraform-state-operations]] from "take a pull first" to "take a pull
@@ -603,7 +804,20 @@ Every item below was observed, both the passing and the failing side where there
 - [ ] The server log shows `423` for the refused attempts and `UNLOCK` when the apply finishes
 - [ ] `force-unlock <ID>` releases it, and the next plan succeeds
 - [ ] `-lock=false` produces **no** LOCK request in the server log — check the absence
-- [ ] Not covered: S3 conditional-write locking, DynamoDB lock tables, IAM failures
+
+On the s3 backend:
+
+- [ ] A `<key>.tflock` object appears before the state write and is deleted after
+- [ ] A concurrent command fails with `StatusCode: 412 ... PreconditionFailed`, and `Path` names the state file
+- [ ] The server log shows the refused conditional PUT **and** the follow-up GET that reads the holder
+- [ ] `force-unlock` reads the lock object, then deletes it
+- [ ] After `destroy`, the state object is still in the bucket and the `.tflock` is gone
+
+On whatever S3 implementation you actually run:
+
+- [ ] The conditional-PUT probe returns **PASS** — and returns **FAIL** against Garage 2.3.0, so the probe measures the endpoint rather than itself
+- [ ] A second command during an apply is refused. On Garage it is not, and the first apply then fails to release its lock
+- [ ] Not covered: AWS IAM, bucket versioning, DynamoDB lock tables
 
 ## Teardown
 
@@ -613,12 +827,20 @@ terraform destroy -auto-approve
 
 ```bash
 pkill -f state-server.mjs
+pkill -f s3-server.mjs
+podman rm -f garage
 cd .. && rm -rf tf-remote-lab
 ```
 
 The server holds state in memory, so stopping it discards everything. That is right for a lab and is the one property you must not copy into anything real.
 
 ## Where this bit us
+
+**A lock that never refuses looks exactly like a lock that works.** Every visible signal on Garage
+was green: `init` migrated, the import landed, `.tflock` appeared in the bucket, applies finished.
+The lock was doing nothing the entire time, and the only evidence was an error *after* the work, on
+release, phrased as a missing key. Checking that the lock object exists — the obvious check — passes
+in both the working and the broken case. The check that separates them is one conditional PUT.
 
 **The AWS SDK downloads state with ranged GETs, and a naive endpoint loops forever.** The first S3
 stub answered every GET with the whole object and a `200`. The SDK's transfer manager asks for byte
@@ -644,7 +866,9 @@ code was checked. Use `gtimeout` from coreutils, or background the command and w
 ## Follow-ups
 
 - [x] Repeat sections 2–5 against the s3 backend with `use_lockfile = true` — done 2026-08-17, section 6
-- [ ] Point the same lab at the Garage endpoint from [[garage-object-storage-onprem]], so the storage side is a real implementation rather than a stub 📅 2026-09-30
+- [x] Point the same lab at the Garage endpoint from [[garage-object-storage-onprem]] — done 2026-08-17, and it found that `use_lockfile` does not lock there
+- [ ] Decide where Terraform state actually lives for this cluster, given that Garage cannot lock it 📅 2026-09-30
+- [ ] Re-run the conditional-PUT probe when Garage is next upgraded, in case the header becomes supported
 - [ ] Run it once against a real AWS bucket, for IAM and versioning
 - [ ] Repeat against DynamoDB locking, which is still what most existing setups use
 - [ ] Write down the team rule for `force-unlock`: who may run it, and what evidence of a dead holder is required first
