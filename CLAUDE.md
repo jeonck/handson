@@ -106,7 +106,7 @@ so at the point it appears.
 ## Never
 
 - **Delete** a document. Retired procedures move to `06-archive/`.
-- Write into `site/`, `scripts/`, or `.github/` — those are framework, and skills do not touch them.
+- Write into `site/`, `scripts/`, or `.github/` **from a skill run.** Those are framework. `handson`, `daily-topic`, `weekly-review` and `standardize` produce documents, never code — a skill that edits the renderer to make its own output look better has stopped being a skill. **Asked directly, change them like any other code**, and say in the commit message that the change did not come from a skill, so the next reader can tell the two apart.
 - Create an `.md` without frontmatter. The build skips it.
 - **Present a command you never ran as verified.** If it came from official documentation, say so.
 - Invent a "common problem" you never actually hit.
