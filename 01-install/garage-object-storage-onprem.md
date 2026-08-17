@@ -7,14 +7,23 @@ stack: [kubernetes, garage, helm, longhorn, ingress-nginx, cert-manager, kubectl
 summary: Stand up an S3-compatible endpoint for Trino, Spark, Airflow, barman-cloud and Longhorn's backup target. One Garage instance at replication factor 1 with Longhorn owning redundancy — and Garage terminates no TLS at all, which is what makes the in-cluster side simpler than MinIO's.
 source: handson
 env: Garage 2.3.0 (AGPLv3) · Kubernetes 1.31.14 (kubeadm) · Longhorn 1.7.2 · Helm 3 · in-tree chart at script/helm
-verified:
+verified: 2026-08-17
+verifiability: partial
+verifiability-note: Chart install, the layout trap, bucket/key/permissions, the full multipart API and barman-cloud end to end were run on kind. The storage layer underneath was kind's local-path, not Longhorn; the ingress/TLS path and Longhorn's backupstore were not exercised.
 duration: 45–75 min
 risk: medium
 ---
 
-> **Nothing here has been run.** Assembled on 2026-08-16 from Garage's own documentation — every
-> command, flag and configuration key below was read off a page linked in place on that date, not
-> observed in a terminal. `verified` stays empty until someone follows it end to end.
+> **Partly verified on 2026-08-17, on a two-node kind cluster.** Sections 1–7 were executed and the
+> chart values corrected from what the chart actually ships. barman-cloud was driven against the
+> resulting endpoint end to end — WAL archived and restored byte-identical, a base backup taken, and
+> a restored cluster returning exactly the rows that existed at backup time and none of the ones
+> added after it.
+>
+> **What was not exercised, and is therefore still documentation rather than observation:** the
+> storage layer was kind's local-path provisioner, **not Longhorn**, so the "Longhorn owns
+> redundancy" premise this document rests on is untested; the ingress and TLS path in section 6; and
+> Longhorn's own backupstore against this endpoint. See the Follow-ups.
 
 An S3 endpoint for the data platform: [[trino-query-engine-onprem]], [[spark-on-k8s-onprem]],
 [[airflow-orchestration-onprem]] remote logging, [[postgresql-cnpg-onprem]]'s barman-cloud backups,
@@ -110,43 +119,66 @@ the configuration reference notes that before v2.0 an unset token disabled those
 while 2.x supports dynamically defined tokens with scopes and expiry — this document uses the simple
 static token.
 
+**Corrected 2026-08-17 against the chart.** Two things the first draft got wrong:
+
+- **If `garage.rpcSecret` is empty the chart generates one and stores it in a Secret itself** — its
+  own comment says so. Doing nothing is a valid choice; the risk is that a `helm upgrade` which
+  regenerates it would split the cluster, so supply your own for anything you intend to keep.
+- To supply it, the value is **`garage.existingRpcSecret`** — a Secret name, with the value under the
+  key `rpcSecret`. There is **no `adminToken` value in this chart**; the admin token is configured
+  through the garage.toml `[admin]` section, via `garage.additionalTopLevelConfig` or an
+  `existingConfigMap`.
+
 ```bash
 kubectl create namespace garage
-kubectl -n garage create secret generic garage-secrets \
-  --from-literal=rpcSecret='<REDACTED>' \
-  --from-literal=adminToken='<REDACTED>'
+kubectl -n garage create secret generic garage-rpc \
+  --from-literal=rpcSecret='<REDACTED>'
 ```
 
-Check the chart's own value names before relying on this Secret being consumed — chart conventions
-differ, and a Secret nothing reads is a silent failure:
+```yaml
+# then, in the values file
+garage:
+  existingRpcSecret: garage-rpc
+```
+
+Always read the chart's own value names rather than a document's — a Secret nothing reads is a
+silent failure, and that is exactly what the first draft of this section produced:
 
 ```bash
-helm show values ./garage | grep -n -i -A3 'rpc\|admin\|existingSecret'
+grep -n -i -A3 'rpcSecret\|existingRpcSecret\|admin' ./garage/values.yaml
 ```
 
 ## 3. Values
 
+Three of these were wrong in the first draft and were corrected against the chart on 2026-08-17.
+Read `values.yaml` at your tag rather than trusting any of it:
+
 ```yaml title="values-garage.yaml"
-# One instance. Redundancy is Longhorn's job here — see the decisions section.
-replicaCount: 1
 garage:
-  replicationFactor: 1
+  # A STRING, not a number. The chart ships `replicationFactor: "3"` quoted, and
+  # the value is templated straight into garage.toml.
+  replicationFactor: "1"
 
   # LMDB is the default since 0.9.0. See the trap about unclean shutdowns below.
-  dbEngine: lmdb
+  dbEngine: "lmdb"
+
+deployment:
+  # Under `deployment:`, NOT at the top level, and the chart's default is 3.
+  # Leave it alone and you get a three-node StatefulSet with two pods Pending.
+  replicaCount: 1
+
+image:
+  # The chart's own comment reads "default to amd64 docker image". On arm64 the
+  # pod never starts; `dxflrs/arm64_garage` is what the 2026-08-17 run used.
+  repository: dxflrs/amd64_garage
 
 persistence:
   meta:
     storageClass: longhorn
-    size: 5Gi
+    size: 5Gi          # chart default is 100Mi
   data:
     storageClass: longhorn
-    size: <DATA_SIZE>
-
-ingress:
-  s3:
-    api:
-      enabled: false      # section 6 creates this explicitly instead
+    size: <DATA_SIZE>  # chart default is 100Mi
 ```
 
 Two things to size deliberately rather than accept:
@@ -207,6 +239,11 @@ kubectl exec -n garage garage-0 -- ./garage status
 
 The node should now show its role, zone and capacity rather than only being connected.
 
+**Observed 2026-08-17.** Before `assign`, `garage status` listed the node under a heading that reads
+**`==== HEALTHY NODES ====`** with `NO ROLE ASSIGNED` in the Capacity column — the pod was `1/1` and
+upstream's own output called it healthy while it stored nothing. `assign` replied *"Role changes are
+staged but not yet committed"*, and only after `apply` did the row carry `dc1` and a capacity.
+
 ## 6. Expose it
 
 **In-cluster** consumers use the Service directly, over plain HTTP:
@@ -221,6 +258,10 @@ one value here most likely to differ:
 ```bash
 kubectl -n garage get svc
 ```
+
+On the 2026-08-17 run the chart created **`garage`** and **`garage-headless`**, both exposing
+**3900** (S3 API) and **3902**, which makes the in-cluster URL above correct as written for a release
+named `garage` in a namespace named `garage`.
 
 **Off-cluster** access goes through ingress-nginx with a certificate from the internal CA:
 
@@ -294,7 +335,7 @@ sitting next to them.
 - [ ] `kubectl -n longhorn-system get volumes.longhorn.io` — both Garage volumes `attached` / **`healthy`**, not merely `attached`
 - [ ] Put an object with the scoped key, record its checksum, get it back, **checksums match**
 - [ ] **The object survives the pod being destroyed.** `kubectl -n garage delete pod garage-0`, wait for the StatefulSet to bring it back, then get the object again and compare checksums. This is the check that tests the storage layer rather than the API
-- [ ] **A multipart upload completes.** Push a file above your client's multipart threshold and read it back — S3A and barman-cloud both depend on multipart, and a single small `PutObject` exercises none of it
+- [x] **A multipart upload completes.** Verified 2026-08-17: a 32 MiB `aws s3 cp` round-tripped with matching md5, and the explicit API path — `create-multipart-upload`, two `upload-part`, `list-parts`, `complete-multipart-upload`, plus `abort-multipart-upload` — all succeeded. S3A and barman-cloud both depend on this, and a single small `PutObject` exercises none of it
 - [ ] **The scoped key is denied on a bucket it was not granted.** Create a second bucket, do not grant the key, and confirm the write is refused. **Run the denial** — a key that works where it should proves nothing about where it should not
 - [ ] An unimplemented endpoint returns **501 Not Implemented** (try `GetBucketPolicy`). This confirms both that you are talking to Garage and that the client tolerates the boundary
 - [ ] From a workstation with the internal CA trusted and **no `-k`**: `https://<S3_HOST>/` completes the TLS handshake. **False pass:** a `curl` from inside the cluster to the Service proves nothing about the ingress path — it never touches ingress-nginx or the certificate
@@ -360,7 +401,9 @@ capability answer will retry it. (same page)
 
 - [ ] Re-point the four consumers at this endpoint once it exists — [[trino-query-engine-onprem]], [[spark-on-k8s-onprem]], [[postgresql-cnpg-onprem]] and [[airflow-orchestration-onprem]] currently carry `https://` and a CA-trust requirement written for MinIO, which Garage does not need in-cluster 📅 2026-08-30
 - [ ] Set resource requests from `kubectl top pod` under a real load — upstream publishes no minimum, so the first numbers have to be measured rather than copied
-- [ ] Prove barman-cloud and Longhorn's backupstore against Garage by running them. [[s3-object-storage-options]] infers both work from an endpoint table; a backup target that fails is worth less than none
+- [x] Prove barman-cloud against Garage — done 2026-08-17: `check-wal-archive`, WAL archive and restore byte-identical, `barman-cloud-backup`, `backup-list`, and a `barman-cloud-restore` into a separate cluster that came up with exactly the rows present at backup time and none added after it, with WAL fetched back from Garage during recovery
+- [ ] Prove **Longhorn's backupstore** against Garage. **Could not be done on kind:** `iscsid` refuses to start inside a rootless-podman node — the unit is skipped by `ConditionVirtualization=!private-users`, and run by hand it exits with `failed to mlockall`. Needs a rootful container runtime, a Linux host, or real VMs 📅 2026-09-15
+- [ ] Re-run sections 3–5 with **Longhorn** as the StorageClass. The 2026-08-17 run used kind's local-path, so the premise this whole document rests on — that Longhorn owns redundancy underneath a factor-1 Garage — is still unobserved 📅 2026-09-15
 - [ ] Decide the retention story now that lifecycle is `Expiration`-only, before Airflow logs and WAL archives accumulate
 
 ## Related

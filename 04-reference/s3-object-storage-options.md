@@ -238,7 +238,8 @@ What would change the recommendation:
 
 - [x] Decide between Garage and paid AIStor and record the decision with its date — done 2026-08-16, see the Decision section above
 - [x] If Garage: write the install guide — done 2026-08-16, [[garage-object-storage-onprem]]. It rewrites the scoped-access-key check against `bucket allow` rather than bucket policies, since Garage implements none of the policy endpoints
-- [ ] Confirm by testing, not by reading, that barman-cloud and Longhorn's backupstore work against Garage — both are inferred above from an endpoint table, and a backup target that fails is worth less than no backup target
+- [x] Confirm barman-cloud against Garage by testing — done 2026-08-17, end to end including a restore that returned the rows as of the backup point. See [[garage-object-storage-onprem]]
+- [ ] Confirm Longhorn's backupstore against Garage. Blocked on kind: `iscsid` cannot start under rootless podman, so Longhorn will not install there. Needs a rootful runtime or real VMs 📅 2026-09-15
 - [ ] Re-check whether Rook still supports Kubernetes 1.31 before any future reconsideration — 1.31 is at the bottom of its stated window
 
 ## Related
