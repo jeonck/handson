@@ -346,8 +346,18 @@ const TODAY = today.toISOString().slice(0, 10);
 const daysAgo = (n) => new Date(today.getTime() - n * 864e5).toISOString().slice(0, 10);
 const dayGap = (d) => Math.round((new Date(TODAY + "T00:00:00") - new Date(d + "T00:00:00")) / 864e5);
 
-const allTasks = notes.flatMap((n) => n.tasks.map((t) => ({ ...t, note: n.slug, noteTitle: n.title })));
-const followups = allTasks.filter((t) => t.kind === "followup");
+const allTasks = notes.flatMap((n) =>
+  n.tasks.map((t) => ({ ...t, note: n.slug, noteTitle: n.title, source: n.source }))
+);
+
+// A weekly review's follow-up list is other documents' follow-ups, copied across —
+// its skill template spells the entry out as "<verbatim, with the document it came
+// from>". Counting those as work of their own double-counts every item a review
+// mentions, and the duplicate pair lands next to each other on the dashboard. The
+// review still shows its own list on its own page; it just stops inflating the total.
+const RESTATES_FOLLOWUPS = new Set(["weekly-review"]);
+
+const followups = allTasks.filter((t) => t.kind === "followup" && !RESTATES_FOLLOWUPS.has(t.source));
 const checklists = allTasks.filter((t) => t.kind === "checklist");
 
 // Shelf life: last verified more than STALE_DAYS ago, or never verified at all.
