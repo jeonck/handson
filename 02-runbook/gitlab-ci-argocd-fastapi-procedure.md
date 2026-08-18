@@ -3,24 +3,24 @@ title: GitLab CI to Argo CD FastAPI deployment — step-by-step procedure
 date: 2026-08-18
 domain: runbook
 tags: [on-prem, cicd, gitops, python]
-stack: [python, fastapi, pytest, ruff, gitlab, gitlab-runner, kaniko]
-summary: Ordered procedure for taking the hello-api FastAPI service from source to a running pod through GitLab CI and Argo CD. Steps 1–4 — application development/testing, the container image, the GitLab Runner, and the CI pipeline — are written up here; later steps are added as separate entries.
+stack: [python, fastapi, pytest, ruff, gitlab, gitlab-runner, kaniko, argocd, kubernetes]
+summary: Ordered procedure for taking the hello-api FastAPI service from source to a running pod through GitLab CI and Argo CD. Steps 1–5 — application development/testing, the container image, the GitLab Runner, the CI pipeline, and the GitOps repository with the Argo CD Application — are written up here; step 6 is added as a separate entry.
 source: handson
-env: Steps 1–2 on Python 3.13.0, FastAPI 0.141.1, pytest 9.1.1, ruff 0.16.3, Podman 5.7.1 on macOS 14.7.5. Steps 3–4 on a two-EC2 substitute for on-prem — GitLab Omnibus 17.x on one instance, GitLab Runner 17.x (Kubernetes executor) and Kaniko on a single-node kubeadm 1.31 cluster on the other
+env: Steps 1–2 on Python 3.13.0, FastAPI 0.141.1, pytest 9.1.1, ruff 0.16.3, Podman 5.7.1 on macOS 14.7.5. Steps 3–5 on a two-EC2 substitute for on-prem — GitLab Omnibus 17.x on one instance, GitLab Runner 17.x (Kubernetes executor), Kaniko, and Argo CD v2.13.2 (non-HA) on a single-node kubeadm 1.31 cluster on the other
 verified: 2026-08-18
 verifiability: partial
-verifiability-note: Steps 1–2 ran in a lab with no gaps. Steps 3–4 ran on the EC2 substitute described in [[gitlab-ci-argocd-fastapi-onprem]]'s own verifiability-note — single-node rather than the real on-prem cluster, GitLab and its registry reached over plain HTTP, and the release job's token left unmasked and unprotected for lab debugging.
-duration: 60–90 min for steps 1–4
+verifiability-note: Steps 1–2 ran in a lab with no gaps. Steps 3–5 ran on the EC2 substitute described in [[gitlab-ci-argocd-fastapi-onprem]]'s own verifiability-note — single-node rather than the real on-prem cluster, GitLab and its registry reached over plain HTTP, the release job's token left unmasked and unprotected for lab debugging, and Argo CD installed non-HA rather than via [[argocd-helm-ha-install]]'s chart.
+duration: 75–110 min for steps 1–5
 risk: low
 ---
 
-> **Verified 2026-08-17 (steps 1–2) and 2026-08-18 (steps 3–4).** Every command below was actually
+> **Verified 2026-08-17 (steps 1–2) and 2026-08-18 (steps 3–5).** Every command below was actually
 > run; outputs are reproduced as printed, with credentials replaced by `<REDACTED>`.
 
 This is the procedure form of [[gitlab-ci-argocd-fastapi-onprem]] — same work, ordered as discrete
 numbered steps rather than narrated. That document carries the design rationale and the traps;
 this one is what to actually type, in order, to reproduce it. Steps are added here one at a time as
-each is re-verified in procedure form; this entry covers **Steps 1–4**.
+each is re-verified in procedure form; this entry covers **Steps 1–5**.
 
 ## Step 1 — Application development and testing
 
@@ -439,6 +439,149 @@ job under it ever ran. "No pipeline was created" is the wrong thing to check for
 pass; "a pipeline exists but nothing in it executed" is the actual claim, and this is what confirms
 it rather than assumes it.
 
+## Step 5 — The GitOps repository and the Argo CD `Application`
+
+**Goal:** Argo CD watching a separate repository, with the credentials it needs to reach a private
+HTTP GitLab instance and the credentials the cluster needs to pull from a private registry — so
+that the pipeline itself never needs a kubeconfig.
+
+### 5.1 Install Argo CD
+
+```bash
+kubectl create namespace argocd
+kubectl apply -n argocd -f https://raw.githubusercontent.com/argoproj/argo-cd/v2.13.2/manifests/install.yaml
+until [ "$(kubectl -n argocd get pods --no-headers | grep -vc Running)" = 0 ]; do sleep 10; done
+kubectl -n argocd get pods
+```
+
+> This lab installed the plain, non-HA manifest, not the HA Helm chart
+> [[argocd-helm-ha-install]] documents — a single `t3.medium` with 4 GB of RAM cannot host
+> `redis-ha`'s three replicas plus everything else on this rig. Recorded as the substitution it is,
+> not silently swapped in: **the HA chart's own gRPC and Redis-Sentinel traps are unproven here.**
+
+### 5.2 Seed the GitOps repository
+
+```yaml title="overlays/prod/deployment.yaml"
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: hello-api
+  namespace: hello-api
+spec:
+  replicas: 2
+  selector:
+    matchLabels: { app: hello-api }
+  template:
+    metadata:
+      labels: { app: hello-api }
+    spec:
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 10001
+      containers:
+        - name: app
+          image: <GITLAB_HOST>:5050/root/hello-api:seed
+          ports: [{ containerPort: 8000 }]
+          env:
+            - name: APP_VERSION
+              value: "seed" # APP_VERSION
+            - name: APP_ENV
+              value: prod
+          readinessProbe:
+            httpGet: { path: /readyz, port: 8000 }
+          livenessProbe:
+            httpGet: { path: /healthz, port: 8000 }
+            periodSeconds: 10
+          resources:
+            requests: { cpu: 50m, memory: 128Mi }
+            limits: { memory: 256Mi }
+      imagePullSecrets:
+        - name: gitlab-registry
+```
+
+```yaml title="overlays/prod/service.yaml"
+apiVersion: v1
+kind: Service
+metadata:
+  name: hello-api
+  namespace: hello-api
+spec:
+  selector: { app: hello-api }
+  ports:
+    - port: 80
+      targetPort: 8000
+```
+
+Commit and push these with a placeholder `:seed` tag — step 4's `release` job is what rewrites the
+`image:` line and the `# APP_VERSION`-marked `value:` line on every real pipeline run afterward.
+This first commit only exists so the Argo CD `Application` in 5.4 has something to sync before a
+pipeline has ever run.
+
+### 5.3 Give the cluster and Argo CD their credentials
+
+Two different secrets, for two different consumers — the kubelet pulling the image, and Argo CD
+reading the private repository:
+
+```bash
+kubectl create namespace hello-api --dry-run=client -o yaml | kubectl apply -f -
+
+kubectl -n hello-api create secret docker-registry gitlab-registry \
+  --docker-server=<GITLAB_HOST>:5050 \
+  --docker-username=<DEPLOY_USER> \
+  --docker-password=<REDACTED> \
+  --dry-run=client -o yaml | kubectl apply -f -
+
+kubectl -n argocd create secret generic gitops-repo \
+  --from-literal=type=git \
+  --from-literal=url=http://<GITLAB_HOST>/<group>/hello-api-gitops.git \
+  --from-literal=username=oauth2 \
+  --from-literal=password=<REDACTED> \
+  --dry-run=client -o yaml | kubectl apply -f -
+kubectl -n argocd label secret gitops-repo argocd.argoproj.io/secret-type=repository --overwrite
+```
+
+**The label is what turns an ordinary secret into a repository credential.** Without
+`argocd.argoproj.io/secret-type=repository`, Argo CD ignores this secret entirely and tries the
+repository anonymously — which fails identically whether the URL is wrong, the credentials are
+wrong, or this label is just missing, so check the label first.
+
+### 5.4 Create the Argo CD `Application`
+
+```yaml title="argocd/hello-api.yaml"
+apiVersion: argoproj.io/v1alpha1
+kind: Application
+metadata:
+  name: hello-api
+  namespace: argocd
+spec:
+  project: default
+  source:
+    repoURL: http://<GITLAB_HOST>/<group>/hello-api-gitops.git
+    targetRevision: main
+    path: overlays/prod
+  destination:
+    server: https://kubernetes.default.svc
+    namespace: hello-api
+  syncPolicy:
+    automated: { prune: true, selfHeal: true }
+    syncOptions: [CreateNamespace=true]
+```
+
+```bash
+kubectl apply -f argocd/hello-api.yaml
+```
+
+```
+application.argoproj.io/hello-api created
+```
+
+**Pass condition:** the `Application` resource is created without error, and
+`kubectl -n argocd get app hello-api -o jsonpath='{.status.sync.status}/{.status.health.status}'`
+starts returning `Synced/Progressing` within a minute or two — not `Unknown/Unknown`, which means
+Argo CD cannot reach the repository at all and points straight back at 5.3's credentials or label.
+**`Synced/Progressing` is not the finish line here** — it is where step 6 picks up, because
+`Synced` describes Git and the cluster agreeing on manifests, not a running pod.
+
 ## Verification checklist
 
 - [x] `ruff check app tests` passes clean
@@ -454,6 +597,10 @@ it rather than assumes it.
 - [x] A pipeline run reports `test`, `build`, and `release` all `success`, in that order
 - [x] The pushed image tag in the registry matches the GitOps commit's short SHA
 - [x] The GitOps repository's own pipeline exists but shows `skipped`, not absent
+- [x] `kubectl -n argocd get pods` shows every Argo CD pod `Running` before the `Application` is created
+- [x] The `gitops-repo` secret carries the `argocd.argoproj.io/secret-type=repository` label
+- [x] `kubectl apply -f argocd/hello-api.yaml` reports `application.argoproj.io/hello-api created`
+- [x] The `Application`'s sync status moves off `Unknown/Unknown` within a couple of minutes
 
 ## Rollback
 
@@ -475,6 +622,15 @@ Step 4: delete `.gitlab-ci.yml` and push, or revert the commit that added it —
 nothing to pick up does no harm sitting idle. The `GITOPS_TOKEN` CI/CD variable can be removed from
 **Settings → CI/CD → Variables** at the same time if the project is being decommissioned, not just
 paused.
+
+Step 5: deleting the `Application` does **not** delete what it deployed unless the resource itself
+carries a finalizer for that — check before assuming a clean cluster afterward.
+
+```bash
+kubectl -n argocd delete application hello-api
+kubectl delete namespace hello-api   # only if step 6's workload should go too
+kubectl -n argocd delete secret gitops-repo
+```
 
 ## Where this bit us
 
@@ -505,9 +661,15 @@ both `APP_VERSION` and `APP_ENV`, and a pattern of `value: ".*"` alone matches w
 first in the file — `APP_ENV`, not the one intended. The `# APP_VERSION` trailing comment in step
 5's manifest exists specifically to give the pattern something unambiguous to anchor on.
 
+**A missing repository-credential label fails exactly like a wrong URL or a wrong password.**
+Forgetting `kubectl label secret gitops-repo argocd.argoproj.io/secret-type=repository` leaves Argo
+CD trying the clone anonymously, and the `Application`'s sync status sits on `Unknown` with a
+generic "repository not found" or auth-failure condition — indistinguishable, from the `Application`
+status alone, from the URL itself being wrong. Check the label on the secret before re-checking the
+URL a third time.
+
 ## Follow-ups
 
-- [ ] Step 5 — the GitOps repository and the Argo CD `Application`
 - [ ] Step 6 — the three-signal deploy verification
 - [ ] Pin the `gitlab-runner` chart version with `--version` — this run did not, and got away with it only because it ran once
 - [ ] Mask and protect `GITOPS_TOKEN` for real — this run set `masked=false`, `protected=false` to keep the token visible in job logs while debugging
@@ -518,4 +680,4 @@ first in the file — `APP_ENV`, not the one intended. The `# APP_VERSION` trail
 [[gitlab-ci-argocd-fastapi-onprem]] — the full narrative document this procedure is extracted from, with the design rationale and every trap hit across the whole pipeline.
 [[pod-crashloopbackoff]] — why liveness must not check a database, referenced from the endpoint split in 1.1.
 [[onprem-3node-kubeadm-ubuntu]] — the cluster the image built in step 2 eventually runs on, using containerd rather than Docker.
-[[argocd-helm-ha-install]] — the same unpinned-chart-version risk, spelled out there for Argo CD.
+[[argocd-helm-ha-install]] — the HA chart this lab substituted away from in step 5.1, and the same unpinned-chart-version risk.
