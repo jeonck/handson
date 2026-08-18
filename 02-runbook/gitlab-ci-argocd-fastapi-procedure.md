@@ -9,7 +9,7 @@ source: handson
 env: Steps 1–2 on Python 3.13.0, FastAPI 0.141.1, pytest 9.1.1, ruff 0.16.3, Podman 5.7.1 on macOS 14.7.5. Steps 3–6 on a two-EC2 substitute for on-prem — GitLab Omnibus 17.x on one instance, GitLab Runner 17.x (Kubernetes executor), Kaniko, and Argo CD v2.13.2 (non-HA) on a single-node kubeadm 1.31 + containerd 2.2.1 cluster on the other
 verified: 2026-08-18
 verifiability: partial
-verifiability-note: Steps 1–2 ran in a lab with no gaps. Steps 3–6 ran on the EC2 substitute described in [[gitlab-ci-argocd-fastapi-onprem]]'s own verifiability-note — single-node rather than the real on-prem cluster, GitLab and its registry reached over plain HTTP rather than cert-manager-issued TLS, the release job's token left unmasked and unprotected for lab debugging, and Argo CD installed non-HA rather than via [[argocd-helm-ha-install]]'s chart.
+verifiability-note: Steps 1–2 ran in a lab with no gaps. Steps 3–6 ran on the EC2 substitute described in [[gitlab-ci-argocd-fastapi-onprem]]'s own verifiability-note — single-node rather than the real on-prem cluster, GitLab and its registry reached over plain HTTP rather than cert-manager-issued TLS, and Argo CD installed non-HA rather than via [[argocd-helm-ha-install]]'s chart. Step 4.1's `GITOPS_TOKEN` variable actually ran unmasked and unprotected for lab debugging; the command shown was corrected to `masked=true`/`protected=true` afterward but not re-run live, since the rig was already destroyed.
 duration: 100–140 min for the full procedure
 risk: medium
 ---
@@ -307,11 +307,25 @@ curl -sS -X POST -H "PRIVATE-TOKEN: <REDACTED>" \
   -d 'key=GITOPS_TOKEN' -d 'value=<REDACTED>' -d 'masked=true' -d 'protected=true'
 ```
 
-> This lab actually ran with `masked=false` and `protected=false`, to keep the token visible in job
-> logs while the pipeline was still being debugged. That is a lab shortcut, not the procedure —
-> mask and protect this for real, exactly as written above. A masked value that fails GitLab's
-> masking rules (whitespace, too short, wrong charset) is rejected at variable-creation time, which
-> is a cheap check to hit before a job ever runs with it.
+**This is the corrected command — `masked=true`, `protected=true`.** The pipeline run this
+procedure documents actually used `masked=false` and `protected=false`, to keep the token visible
+in job logs while the pipeline was still being debugged; that was a lab shortcut taken mid-session,
+not the intended procedure, and it has been corrected here rather than left as a caveat to remember.
+
+Two things worth knowing about each flag, neither re-exercised live since the EC2 rig this ran
+against no longer exists:
+
+- **`masked=true`** is rejected at variable-creation time — a `400` from this exact `curl`, before
+  any job ever runs — if the value fails GitLab's masking rules (must be a single line, meet a
+  minimum length, and avoid characters GitLab cannot reliably find and redact in raw log text). A
+  `glpat-…` project access token is exactly the shape GitLab expects here: one line, no whitespace,
+  comfortably over the minimum length. It is not expected to fail this check; it simply was not
+  re-run against a live instance after the flag was corrected.
+- **`protected=true`** scopes the variable to pipelines running on a protected ref. GitLab protects
+  a new project's default branch automatically, and this pipeline runs on `main` — so this should
+  need nothing extra here. On a repository where the default branch's protection was ever turned
+  off, `protected=true` makes the variable silently absent from an unprotected branch's pipeline,
+  which reads like a missing-credential bug rather than an intentional scoping rule.
 
 ### 4.2 Write the pipeline
 
@@ -821,9 +835,9 @@ from a correctly-secured one.
 
 ## Follow-ups
 
+- [x] Mask and protect `GITOPS_TOKEN` for real — step 4.1's command corrected to `masked=true`, `protected=true`; not re-run against a live instance, since the EC2 rig was already torn down when this was fixed
 - [ ] Pin the `gitlab-runner` chart version with `--version` — this run did not, and got away with it only because it ran once
-- [ ] Mask and protect `GITOPS_TOKEN` for real — this run set `masked=false`, `protected=false` to keep the token visible in job logs while debugging
-- [ ] Re-run this procedure against a real multi-node on-prem cluster and a CA-signed registry — every step here ran on the single-node, plain-HTTP EC2 substitute described in each step's env
+- [ ] Re-run this procedure against a real multi-node on-prem cluster and a CA-signed registry — every step here ran on the single-node, plain-HTTP EC2 substitute described in each step's env, and step 4.1's mask/protect correction above is part of what a re-run should confirm
 - [ ] Decide whether this procedure's six steps should fold back into a single document now that all are written, or stay split — revisit once it needs its next edit
 
 ## Related
