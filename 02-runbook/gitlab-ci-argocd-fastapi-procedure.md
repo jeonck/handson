@@ -4,22 +4,22 @@ date: 2026-08-18
 domain: runbook
 tags: [on-prem, cicd, gitops, python]
 stack: [python, fastapi, pytest, ruff]
-summary: Ordered procedure for taking the hello-api FastAPI service from source to a running pod through GitLab CI and Argo CD. Step 1 of the procedure — application development and testing — is written up here; later steps are added as separate entries.
+summary: Ordered procedure for taking the hello-api FastAPI service from source to a running pod through GitLab CI and Argo CD. Steps 1–2 — application development/testing and the container image — are written up here; later steps are added as separate entries.
 source: handson
-env: Python 3.13.0, FastAPI 0.141.1, pytest 9.1.1, ruff 0.16.3 on macOS 14.7.5
+env: Python 3.13.0, FastAPI 0.141.1, pytest 9.1.1, ruff 0.16.3, Podman 5.7.1 on macOS 14.7.5
 verified: 2026-08-17
 verifiability: lab
-duration: 15–20 min for this step
+duration: 30–40 min for steps 1–2
 risk: low
 ---
 
-> **Verified 2026-08-17.** Every command below was run against the exact `app/` and `tests/`
-> committed to the application repository, and every output is reproduced as printed.
+> **Verified 2026-08-17.** Every command below was run against the exact `app/`, `tests/` and
+> `Dockerfile` committed to the application repository, and every output is reproduced as printed.
 
 This is the procedure form of [[gitlab-ci-argocd-fastapi-onprem]] — same work, ordered as discrete
 numbered steps rather than narrated. That document carries the design rationale and the traps;
 this one is what to actually type, in order, to reproduce it. Steps are added here one at a time as
-each is re-verified in procedure form; this entry covers **Step 1 only**.
+each is re-verified in procedure form; this entry covers **Steps 1–2**.
 
 ## Step 1 — Application development and testing
 
@@ -134,18 +134,98 @@ passed` with zero failures. Either one failing means the endpoint work in 1.1–
 nothing later in the overall procedure depends on this step, so nothing else should start until
 both pass.
 
+## Step 2 — The container image
+
+**Goal:** an image that runs as a non-root user and takes its version from the environment rather
+than from a rebuild — both are things the cluster will demand later, so proving them here is cheap
+compared to discovering a violation from a pod's `CrashLoopBackOff`.
+
+### 2.1 Write the Dockerfile
+
+```dockerfile title="Dockerfile"
+FROM python:3.13-slim AS build
+WORKDIR /app
+COPY requirements.txt .
+RUN pip install --no-cache-dir --prefix=/install -r requirements.txt
+
+FROM python:3.13-slim
+# A non-root user, because the deployment sets runAsNonRoot and the kubelet
+# refuses to start the container if the image only has root.
+RUN useradd --uid 10001 --create-home appuser
+COPY --from=build /install /usr/local
+WORKDIR /app
+COPY app ./app
+USER 10001
+EXPOSE 8000
+CMD ["uvicorn", "app.main:app", "--host", "0.0.0.0", "--port", "8000"]
+```
+
+```text title=".dockerignore"
+.venv/
+.git/
+tests/
+__pycache__/
+*.pyc
+```
+
+**`.dockerignore` matters more than it looks.** Without it the build context carries `.venv/`,
+which is both slow to send to the daemon and a way to ship a laptop's compiled binaries into a
+Linux image.
+
+### 2.2 Build the image
+
+```bash
+podman build -t hello-api:probe .
+```
+
+### 2.3 Prove the two properties the cluster will demand
+
+Run it, inject a version, and check both the response and the user it runs as:
+
+```bash
+podman run -d --name hello-probe -p 8000:8000 \
+  -e APP_VERSION=abc1234 -e APP_ENV=lab hello-api:probe
+curl -sS http://127.0.0.1:8000/healthz
+```
+
+```
+{"status":"ok","version":"abc1234","environment":"lab"}
+```
+
+```bash
+podman exec hello-probe id
+```
+
+```
+uid=10001(appuser) gid=10001(appuser) groups=10001(appuser)
+```
+
+```bash
+podman rm -f hello-probe
+```
+
+**Pass condition:** the `id` output names uid `10001`, not `root` — a container that starts fine
+here but only has a root user will be refused by the kubelet once `runAsNonRoot: true` is set on
+the Deployment, which is a worse place to find this out. And the `/healthz` response must change
+its `version` field when `APP_VERSION` changes without rebuilding the image — that is what makes
+promoting the same image between environments a config change instead of a new build.
+
 ## Verification checklist
 
 - [x] `ruff check app tests` passes clean
 - [x] `pytest -q` reports `2 passed`
 - [x] Every pin in `requirements.txt` / `requirements-dev.txt` was resolved by `pip`, not written from memory
+- [x] `podman build` succeeds and the image runs
+- [x] `podman exec … id` reports uid `10001`, not `root`
+- [x] Changing `APP_VERSION` changes the `/healthz` response without rebuilding the image
 
 ## Rollback
 
-Nothing outside this directory is touched. Delete the virtualenv and start over:
+Nothing outside this directory or the local image store is touched.
 
 ```bash
 rm -rf .venv
+podman rmi hello-api:probe
 ```
 
 ## Where this bit us
@@ -162,7 +242,6 @@ reason.
 
 ## Follow-ups
 
-- [ ] Step 2 — image build (Podman, non-root user, version injected at runtime)
 - [ ] Step 3 — GitLab Runner and building images without a Docker daemon
 - [ ] Step 4 — the `.gitlab-ci.yml` pipeline (test / build / release)
 - [ ] Step 5 — the GitOps repository and the Argo CD `Application`
@@ -173,3 +252,4 @@ reason.
 
 [[gitlab-ci-argocd-fastapi-onprem]] — the full narrative document this procedure is extracted from, with the design rationale and every trap hit across the whole pipeline.
 [[pod-crashloopbackoff]] — why liveness must not check a database, referenced from the endpoint split in 1.1.
+[[onprem-3node-kubeadm-ubuntu]] — the cluster the image built in step 2 eventually runs on, using containerd rather than Docker.
