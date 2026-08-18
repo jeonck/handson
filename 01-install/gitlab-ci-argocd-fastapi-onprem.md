@@ -537,6 +537,7 @@ API's `/api/v4/version`, before concluding a service is down.
 
 ## Related
 
+[[gitlab-ci-argocd-fastapi-procedure]] — this document's content reordered as discrete numbered steps to execute, rather than narrated.
 [[argocd-helm-ha-install]] — the Argo CD this depends on, including the gRPC trap when exposing it.
 [[schedulable-node-budget]] — how many nodes anything installed here can actually use.
 [[cert-manager-onprem]] — the internal CA the registry certificate comes from, which the nodes must trust.
