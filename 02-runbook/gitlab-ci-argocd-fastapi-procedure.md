@@ -4,22 +4,23 @@ date: 2026-08-18
 domain: runbook
 tags: [on-prem, cicd, gitops, python]
 stack: [python, fastapi, pytest, ruff]
-summary: Ordered procedure for taking the hello-api FastAPI service from source to a running pod through GitLab CI and Argo CD. Steps 1–2 — application development/testing and the container image — are written up here; later steps are added as separate entries.
+summary: Ordered procedure for taking the hello-api FastAPI service from source to a running pod through GitLab CI and Argo CD. Steps 1–3 — application development/testing, the container image, and the GitLab Runner — are written up here; later steps are added as separate entries.
 source: handson
-env: Python 3.13.0, FastAPI 0.141.1, pytest 9.1.1, ruff 0.16.3, Podman 5.7.1 on macOS 14.7.5
-verified: 2026-08-17
-verifiability: lab
-duration: 30–40 min for steps 1–2
+env: Steps 1–2 on Python 3.13.0, FastAPI 0.141.1, pytest 9.1.1, ruff 0.16.3, Podman 5.7.1 on macOS 14.7.5. Step 3 on a two-EC2 substitute for on-prem — GitLab Omnibus 17.x on one instance, GitLab Runner 17.x (Kubernetes executor) on a single-node kubeadm 1.31 cluster on the other
+verified: 2026-08-18
+verifiability: partial
+verifiability-note: Steps 1–2 ran in a lab with no gaps. Step 3 ran on the EC2 substitute described in [[gitlab-ci-argocd-fastapi-onprem]]'s own verifiability-note — single-node rather than the real on-prem cluster, GitLab reached over plain HTTP.
+duration: 45–60 min for steps 1–3
 risk: low
 ---
 
-> **Verified 2026-08-17.** Every command below was run against the exact `app/`, `tests/` and
-> `Dockerfile` committed to the application repository, and every output is reproduced as printed.
+> **Verified 2026-08-17 (steps 1–2) and 2026-08-18 (step 3).** Every command below was actually run;
+> outputs are reproduced as printed, with credentials replaced by `<REDACTED>`.
 
 This is the procedure form of [[gitlab-ci-argocd-fastapi-onprem]] — same work, ordered as discrete
 numbered steps rather than narrated. That document carries the design rationale and the traps;
 this one is what to actually type, in order, to reproduce it. Steps are added here one at a time as
-each is re-verified in procedure form; this entry covers **Steps 1–2**.
+each is re-verified in procedure form; this entry covers **Steps 1–3**.
 
 ## Step 1 — Application development and testing
 
@@ -210,6 +211,85 @@ the Deployment, which is a worse place to find this out. And the `/healthz` resp
 its `version` field when `APP_VERSION` changes without rebuilding the image — that is what makes
 promoting the same image between environments a config change instead of a new build.
 
+## Step 3 — GitLab Runner, and building images without a Docker daemon
+
+**Goal:** a runner registered against GitLab that executes each job as its own pod, and a build
+approach that needs no Docker daemon on the cluster — because there is not going to be one.
+
+### 3.1 Why not `docker build`
+
+`docker build` needs a Docker daemon, and every way to get one inside Kubernetes costs something:
+
+| Approach | Cost |
+|---|---|
+| Mount the node's `/var/run/docker.sock` | any job can control every container on that node — and a containerd cluster has no such socket to mount |
+| Docker-in-Docker, privileged | a privileged pod per build |
+| **Kaniko / Buildah, rootless** | no daemon, no privilege — use this |
+
+The cluster this rig verified against runs containerd, so the socket option was never on the table.
+
+### 3.2 Mint a runner authentication token
+
+The registration-token flow is deprecated; GitLab's runner-creation API issues an authentication
+token (`glrt-…`) scoped to the runner you describe:
+
+```bash
+curl -sS -X POST -H "PRIVATE-TOKEN: <REDACTED>" \
+  "http://<GITLAB_HOST>/api/v4/user/runners" \
+  -d 'runner_type=instance_type&description=k8s&tag_list=k8s'
+```
+
+The response's `token` field is the value the Helm chart needs next. It is a credential — treat it
+like one, not like the project access token used elsewhere in this procedure.
+
+### 3.3 Install GitLab Runner with the Kubernetes executor
+
+```bash
+helm repo add gitlab https://charts.gitlab.io
+helm repo update
+helm upgrade --install gitlab-runner gitlab/gitlab-runner \
+  --namespace gitlab-runner --create-namespace \
+  --set gitlabUrl=http://<GITLAB_HOST>/ \
+  --set runnerToken='<REDACTED>' \
+  --set rbac.create=true \
+  --set runners.privileged=false \
+  --set runners.config='[[runners]]
+  [runners.kubernetes]
+    namespace = "{{.Release.Namespace}}"
+    image = "alpine:3.20"
+    cpu_request = "100m"
+    memory_request = "128Mi"
+' --wait --timeout 5m
+kubectl -n gitlab-runner get pods
+```
+
+```
+gitlab-runner-8969cc55b-pzbpg   1/1   Running
+```
+
+**This chart prints a warning that reads like a misconfiguration and is not one:**
+
+```
+## Please set `serviceAccount.create` to either `true` or `false`.
+## For backwards compatibility a service account will be created.
+```
+
+The install still succeeds and the runner still registers — this is the chart nagging about a
+default it will remove in a future major version, not a failure. The pod reaching `1/1 Running` is
+the actual pass condition; do not chase this warning into a `serviceAccount.create` value hunt on
+what is otherwise a working install.
+
+**`helm upgrade --install`, not `helm install`.** The upgrade form is idempotent — re-running it
+after editing `runners.config` converges the existing release instead of erroring on "already
+exists". This lab did not pin `--version` on the chart; a real deployment should, for the same
+reason [[argocd-helm-ha-install]] gives for pinning Argo CD's chart version — an unpinned
+`helm upgrade --install` can pull a different chart on the next run than the one just verified.
+
+**Pass condition:** `kubectl -n gitlab-runner get pods` shows the runner pod `1/1 Running`, and the
+runner appears under the project or instance's **Settings → CI/CD → Runners** as online. Neither on
+its own is sufficient — a pod can be `Running` while still failing to authenticate against GitLab,
+which only shows up in the second check.
+
 ## Verification checklist
 
 - [x] `ruff check app tests` passes clean
@@ -218,14 +298,24 @@ promoting the same image between environments a config change instead of a new b
 - [x] `podman build` succeeds and the image runs
 - [x] `podman exec … id` reports uid `10001`, not `root`
 - [x] Changing `APP_VERSION` changes the `/healthz` response without rebuilding the image
+- [x] The runner-creation API returns a `glrt-…` token
+- [x] `kubectl -n gitlab-runner get pods` shows the runner pod `1/1 Running`
+- [x] The runner appears online under **Settings → CI/CD → Runners**
 
 ## Rollback
 
-Nothing outside this directory or the local image store is touched.
+Steps 1–2: nothing outside this directory or the local image store is touched.
 
 ```bash
 rm -rf .venv
 podman rmi hello-api:probe
+```
+
+Step 3: remove the runner and its namespace; this does not touch GitLab itself or any project.
+
+```bash
+helm -n gitlab-runner uninstall gitlab-runner
+kubectl delete namespace gitlab-runner
 ```
 
 ## Where this bit us
@@ -240,12 +330,17 @@ found` because zsh treats the brackets as a glob. It works unquoted in a CI job 
 is exactly why this only ever wastes time locally — the command in 1.3 above is quoted for this
 reason.
 
+**The runner Helm chart's `serviceAccount.create` warning looks like a failed install.** It prints
+in red-flag style (`## Please set … ##`) in the middle of otherwise normal Helm output, immediately
+before the install reports success. Read the actual exit status and the pod's `Running` state, not
+the presence of a warning block, before deciding an install failed.
+
 ## Follow-ups
 
-- [ ] Step 3 — GitLab Runner and building images without a Docker daemon
 - [ ] Step 4 — the `.gitlab-ci.yml` pipeline (test / build / release)
 - [ ] Step 5 — the GitOps repository and the Argo CD `Application`
 - [ ] Step 6 — the three-signal deploy verification
+- [ ] Pin the `gitlab-runner` chart version with `--version` — this run did not, and got away with it only because it ran once
 - [ ] Fold this procedure's steps back into a single ordered document once all are written, or keep it split by step — decide once there are more than a couple
 
 ## Related
@@ -253,3 +348,4 @@ reason.
 [[gitlab-ci-argocd-fastapi-onprem]] — the full narrative document this procedure is extracted from, with the design rationale and every trap hit across the whole pipeline.
 [[pod-crashloopbackoff]] — why liveness must not check a database, referenced from the endpoint split in 1.1.
 [[onprem-3node-kubeadm-ubuntu]] — the cluster the image built in step 2 eventually runs on, using containerd rather than Docker.
+[[argocd-helm-ha-install]] — the same unpinned-chart-version risk, spelled out there for Argo CD.
