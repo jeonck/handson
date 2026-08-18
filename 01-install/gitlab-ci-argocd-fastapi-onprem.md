@@ -6,23 +6,25 @@ tags: [on-prem, cicd, gitops, python]
 stack: [kubernetes, gitlab, gitlab-runner, argocd, fastapi, kaniko, podman]
 summary: CI builds and pushes an image, writes the new tag to a GitOps repository, and stops there — Argo CD does the deploying. The pipeline never holds a kubeconfig, and the check that the deploy worked is the running pod's image digest, not a green pipeline.
 source: handson
-env: Application and image verified locally — Python 3.13.0, FastAPI 0.141.1, Podman 5.7.1 on macOS 14.7.5. Cluster side targets Kubernetes 1.31 (kubeadm, on-prem) · GitLab 17.x · Argo CD per the chart in the companion document
-verified: 2026-08-17
+env: Application and image verified locally — Python 3.13.0, FastAPI 0.141.1, Podman 5.7.1 on macOS 14.7.5. Sections 3–7 verified on two AWS EC2 instances standing in for on-prem — GitLab Omnibus 17.x on a separate t3.large, single-node kubeadm 1.31 + Calico on a t3.medium (not the real on-prem 3-node cluster), GitLab Runner 17.x (Kubernetes executor), Argo CD per the chart in the companion document. Registry reached over plain HTTP, not the internal-CA TLS this document assumes for a real deployment.
+verified: 2026-08-18
 verifiability: partial
-verifiability-note: The application, its tests and the container image were built and run here — the image serves /healthz as a non-root user. Everything from the GitLab Runner onwards is drafted, not executed: no GitLab instance, no runner, no registry and no cluster were available on this machine.
+verifiability-note: End to end — GitLab, runner, pipeline, GitOps commit, Argo CD sync and the running pod — ran on a two-EC2-instance substitute for on-prem, single-node instead of 3-node, and the registry was plain HTTP instead of the internal-CA TLS the real deployment would use. cert-manager-issued registry TLS and the true multi-node scheduling story from [[schedulable-node-budget]] are still unproven.
 duration: 2–4 h for the cluster side
 risk: medium
 ---
 
-> **Verified 2026-08-17, for the half that fits on a laptop.** The FastAPI service, its tests and the
-> container image are real: `ruff` clean, `pytest` green, image built with Podman, container running
-> as uid 10001 and answering `/healthz` with the version injected at runtime. Those outputs are
-> reproduced below as they were printed.
+> **Verified 2026-08-18, end to end, on a substitute cluster.** The FastAPI service, its tests and the
+> container image were verified locally first: `ruff` clean, `pytest` green, image built with Podman,
+> container running as uid 10001 and answering `/healthz` with the version injected at runtime.
 >
-> ⚠️ **Everything from section 3 onwards has not been run.** No GitLab instance, no runner, no
-> registry, no cluster on this machine. The pipeline, the manifests and the Argo CD Application are
-> drafted against upstream documentation. Treat them as a design to execute, and fill in `verified`
-> when you have.
+> Sections 3–7 were then run for real on two AWS EC2 instances (GitLab Omnibus on one, a single-node
+> kubeadm cluster on the other) standing in for the on-prem hardware — a pipeline built and pushed an
+> image, committed the tag to a GitOps repository, and Argo CD deployed it. The three-signal check in
+> [section 7](#7-the-check-that-can-actually-fail) passed: pipeline SHA, running pod's image digest and
+> `/healthz`'s version field all agreed. What that run could not exercise — a real multi-node cluster
+> and a certificate-authority-signed registry instead of plain HTTP — is called out inline and in
+> [Where this bit us](#where-this-bit-us).
 
 Two tools, one rule: **GitLab builds, Argo CD deploys, and the pipeline never touches the cluster.**
 
@@ -127,6 +129,20 @@ httpx==0.28.1
 ruff==0.16.3
 ```
 
+```toml title="pyproject.toml"
+[tool.pytest.ini_options]
+# Without this, the console-script `pytest` cannot import `app` — only `python
+# -m pytest` can, because that form puts the working directory on sys.path and
+# the console script does not. The CI job below runs the console script.
+pythonpath = ["."]
+testpaths = ["tests"]
+```
+
+**This file only earns its place because CI runs `pytest -q`, not `python -m pytest -q`.** Testing
+locally with `python -m pytest` never surfaces the gap — `sys.path` gets the working directory for
+free — so the first pipeline run is where `ModuleNotFoundError: No module named 'app'` shows up. See
+[Where this bit us](#where-this-bit-us).
+
 Those versions were resolved by `pip` on 2026-08-17, not remembered. Pin what you installed:
 
 ```bash
@@ -206,8 +222,6 @@ The same image with a different `APP_VERSION` reports a different version. That 
 
 ## 3. The runner, and building images without a Docker daemon
 
-*From here on, drafted rather than executed.*
-
 Install GitLab Runner on the cluster with the Kubernetes executor, so each job is a pod that goes away afterwards.
 
 ```bash
@@ -274,6 +288,9 @@ release:
     - git config user.name "gitlab-ci"
     # [skip ci] or this commit triggers the gitops repo's own pipeline, which
     # commits again, which triggers... a loop that only stops when someone notices.
+    # [skip ci] does not stop the pipeline from being *created* — it still shows up
+    # in the pipeline list with status "skipped". What it stops is any job inside
+    # it from *running*, which is what actually breaks the loop.
     - git commit -am "hello-api $TAG [skip ci]"
     - git push
   rules:
@@ -332,6 +349,26 @@ kubectl -n hello-api create secret docker-registry gitlab-registry \
   --docker-username=<DEPLOY_USER> \
   --docker-password=<REDACTED>
 ```
+
+> **If the registry is plain HTTP instead of CA-signed TLS** — true for a quick lab, not for a real
+> deployment — containerd needs an explicit insecure-registry entry, and on containerd **2.2.x this has
+> a live upstream bug that produces no error, just a pull that never works.** See
+> [Where this bit us](#where-this-bit-us) before assuming the config below is enough:
+>
+> ```toml title="/etc/containerd/certs.d/<registry-host>:<port>/hosts.toml"
+> server = "http://<registry-host>:<port>"
+> [host."http://<registry-host>:<port>"]
+>   capabilities = ["pull", "resolve"]
+>   skip_verify = true
+> ```
+
+**Anonymous pulls are correctly refused, and that is not a bug to chase.** A project created as
+Private (GitLab's default) rejects an unauthenticated pull with `403 {"errors":[{"code":"DENIED",
+"message":"access forbidden"}]}` — from `crictl pull` with no credentials, or `ctr images pull` run
+by hand, this is expected and correct. The `imagePullSecrets` above is what makes the kubelet's pull
+authenticated; testing with a bare `crictl`/`ctr` pull to "confirm the registry is reachable" will
+report this 403 and looks identical to a broken registry. Check reachability with `curl`, not with an
+anonymous image pull.
 
 ## 6. The Argo CD Application
 
@@ -401,20 +438,22 @@ The pass condition is that all three agree. The last one is worth keeping even t
 
 ## Verification checklist
 
-Sections 1–2 were run; the rest is the list to work through on the first real execution.
+Every item below ran, on the EC2 substitute described in `verifiability-note`. The last two are
+deliberately left unchecked — this run never touched them.
 
 - [x] `ruff check` clean and `pytest` green on the application
 - [x] The image builds, and `podman exec … id` reports uid 10001 — not root
 - [x] `APP_VERSION` changes the response without rebuilding the image
-- [ ] `.gitlab-ci.yml` parses as YAML before it is pushed — GitLab's CI lint, or `yaml.safe_load`
-- [ ] A pipeline run produces an image tagged with the commit SHA, and **no `latest` tag exists**
-- [ ] The `release` job's commit lands in the GitOps repository and does **not** trigger another pipeline
-- [ ] Argo CD moves to `Synced`/`Healthy` within a few minutes with no manual sync
-- [ ] The running pod's `imageID` matches the digest CI pushed
-- [ ] `/healthz` from inside the cluster reports the new version
+- [x] `.gitlab-ci.yml` parses as YAML before it is pushed — GitLab's CI lint, or `yaml.safe_load`
+- [x] A pipeline run produces an image tagged with the commit SHA, and **no `latest` tag exists**
+- [x] The `release` job's commit lands in the GitOps repository and does **not run any jobs** — it still
+      creates a `skipped` pipeline, which is not the same as no pipeline
+- [x] Argo CD moves to `Synced`/`Healthy` within a few minutes with no manual sync
+- [x] The running pod's `imageID` matches the digest CI pushed
+- [x] `/healthz` from inside the cluster reports the new version
 - [ ] `kubectl -n hello-api scale deploy hello-api --replicas=5` is reverted by selfHeal
 - [ ] Revert the GitOps commit — the previous image is running again within minutes
-- [ ] No kubeconfig or cluster credential exists anywhere in GitLab CI variables
+- [x] No kubeconfig or cluster credential exists anywhere in GitLab CI variables
 
 That last one is the whole architecture as a single check. If it fails, the pipeline can deploy directly and the GitOps repository is decoration.
 
@@ -432,7 +471,43 @@ For a bad pipeline rather than a bad release, delete the tag from the registry a
 
 ## Where this bit us
 
-Only two things, because only the first half ran.
+**`containerd 2.2.x` silently ignores a colon-separated `config_path` — the single most expensive trap
+in this run.** `containerd config default` on this version writes `config_path =
+'/etc/containerd/certs.d:/etc/docker/certs.d'` into the CRI images plugin. That value looks correct in
+`containerd config dump`, the `hosts.toml` file underneath it was byte-for-byte correct, and `ctr
+images pull --hosts-dir /etc/containerd/certs.d` (with the directory named explicitly) even succeeded
+— which briefly looked like confirmation the setup was right. It was not: that flag makes `ctr` ignore
+the daemon's own config and use the given directory directly, so it was accidentally testing the
+directory, not the configuration. The actual CRI pull path — what `crictl pull` and the kubelet both
+use — kept failing with `http: server gave HTTP response to HTTPS client` regardless, because
+containerd 2.2.x does not support a colon-separated multi-path value there
+([containerd#12808](https://github.com/containerd/containerd/issues/12808)); it neither errors nor
+falls back, it just never resolves the entry. Cutting the value down to a single path —
+`config_path = '/etc/containerd/certs.d'`, no `/etc/docker/certs.d` — and restarting containerd fixed
+it immediately. **Verify an insecure-registry config with `crictl pull`, never with `ctr … --hosts-dir
+<dir>`**; the two do not exercise the same code path, and the second one lies.
+
+**A `Synced`/`Degraded` Argo CD Application looks like a deploy problem and is actually a pull
+problem.** `Synced` held for over ten minutes while the pods sat in `ImagePullBackOff` underneath it —
+exactly the failure mode [section 7](#7-the-check-that-can-actually-fail) warns about, just with a
+different root cause (image pull, not a stale tag) than the one the section originally illustrated.
+`kubectl -n hello-api get pods` and the events under `kubectl describe pod` were the only things that
+showed the real state; the Argo CD UI's own health rollup did not.
+
+**A private GitLab project correctly returns `403` to an anonymous registry pull.** After fixing the
+containerd bug above, the very next error — `access forbidden` from `/jwt/auth` — looked like the same
+class of problem and was not: GitLab was doing its job, refusing a pull with no credentials against a
+Private project (the default visibility for a new project). The fix was already in the manifest
+(`imagePullSecrets: [gitlab-registry]`) — the false lead was testing reachability with an anonymous
+`crictl pull` instead of `curl`, which cannot tell a broken registry from a correctly-secured one.
+
+**The console-script `pytest` cannot import `app`; `python -m pytest` can, and hides the gap.** Testing
+locally with `python -m pytest -q` never surfaces this — that invocation puts the working directory on
+`sys.path` for free. The pipeline's `pytest -q` does not get that, and fails with `ModuleNotFoundError:
+No module named 'app'` on the very first CI run. Fixed by the `pyproject.toml` in
+[section 1](#1-the-application) with `pythonpath = ["."]`. Whichever form is used locally to develop
+against, run the *pipeline's* exact command at least once before trusting green tests to mean the
+pipeline will pass.
 
 **The `.gitlab-ci.yml` in the first draft was not valid YAML.** The release job's `sed` contains
 `image: `, and an unquoted YAML scalar cannot hold a colon followed by a space — the whole file is
@@ -444,9 +519,17 @@ yaml.safe_load(open('.gitlab-ci.yml'))"` costs nothing, and GitLab's own CI lint
 
 **`uvicorn[standard]` needs quoting.** In zsh, `pip install uvicorn[standard]` fails with `no matches found` because the shell treats the brackets as a glob. In a CI job running `sh` it works, so this is only ever a local-terminal problem — which is exactly why it wastes time.
 
+**A wrong readiness check can waste more time than a real outage.** While waiting for GitLab itself to
+come up, `curl http://<host>/-/readiness` returned `404` for several minutes and read as "GitLab is not
+up yet." GitLab was already serving — `/` was returning `302` the whole time. `/-/readiness` is real,
+but it is not the first endpoint to answer during a slow startup; check the plain root response, or the
+API's `/api/v4/version`, before concluding a service is down.
+
 ## Follow-ups
 
-- [ ] Run sections 3–7 on the real cluster and fill in what breaks 📅 2026-09-30
+- [x] Run sections 3–7 end to end and fill in what breaks — done on an EC2 substitute, 2026-08-18
+- [ ] Re-run on the real on-prem 3-node cluster from [[onprem-3node-kubeadm-ubuntu]] — this run was single-node, and [[schedulable-node-budget]]'s multi-node scheduling story is still unproven 📅 2026-09-30
+- [ ] Re-run the registry over CA-signed TLS via [[cert-manager-onprem]] instead of plain HTTP — the containerd insecure-registry path documented here would not even be exercised on a real deployment
 - [ ] Decide where GitLab itself lives — on the cluster it protects is the wrong answer
 - [ ] Add image scanning to the build stage, and decide whether a finding fails the pipeline or only reports
 - [ ] Sign images and verify signatures at admission, once the basic path works
