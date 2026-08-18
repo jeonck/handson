@@ -3,24 +3,24 @@ title: GitLab CI to Argo CD FastAPI deployment — step-by-step procedure
 date: 2026-08-18
 domain: runbook
 tags: [on-prem, cicd, gitops, python]
-stack: [python, fastapi, pytest, ruff]
-summary: Ordered procedure for taking the hello-api FastAPI service from source to a running pod through GitLab CI and Argo CD. Steps 1–3 — application development/testing, the container image, and the GitLab Runner — are written up here; later steps are added as separate entries.
+stack: [python, fastapi, pytest, ruff, gitlab, gitlab-runner, kaniko]
+summary: Ordered procedure for taking the hello-api FastAPI service from source to a running pod through GitLab CI and Argo CD. Steps 1–4 — application development/testing, the container image, the GitLab Runner, and the CI pipeline — are written up here; later steps are added as separate entries.
 source: handson
-env: Steps 1–2 on Python 3.13.0, FastAPI 0.141.1, pytest 9.1.1, ruff 0.16.3, Podman 5.7.1 on macOS 14.7.5. Step 3 on a two-EC2 substitute for on-prem — GitLab Omnibus 17.x on one instance, GitLab Runner 17.x (Kubernetes executor) on a single-node kubeadm 1.31 cluster on the other
+env: Steps 1–2 on Python 3.13.0, FastAPI 0.141.1, pytest 9.1.1, ruff 0.16.3, Podman 5.7.1 on macOS 14.7.5. Steps 3–4 on a two-EC2 substitute for on-prem — GitLab Omnibus 17.x on one instance, GitLab Runner 17.x (Kubernetes executor) and Kaniko on a single-node kubeadm 1.31 cluster on the other
 verified: 2026-08-18
 verifiability: partial
-verifiability-note: Steps 1–2 ran in a lab with no gaps. Step 3 ran on the EC2 substitute described in [[gitlab-ci-argocd-fastapi-onprem]]'s own verifiability-note — single-node rather than the real on-prem cluster, GitLab reached over plain HTTP.
-duration: 45–60 min for steps 1–3
+verifiability-note: Steps 1–2 ran in a lab with no gaps. Steps 3–4 ran on the EC2 substitute described in [[gitlab-ci-argocd-fastapi-onprem]]'s own verifiability-note — single-node rather than the real on-prem cluster, GitLab and its registry reached over plain HTTP, and the release job's token left unmasked and unprotected for lab debugging.
+duration: 60–90 min for steps 1–4
 risk: low
 ---
 
-> **Verified 2026-08-17 (steps 1–2) and 2026-08-18 (step 3).** Every command below was actually run;
-> outputs are reproduced as printed, with credentials replaced by `<REDACTED>`.
+> **Verified 2026-08-17 (steps 1–2) and 2026-08-18 (steps 3–4).** Every command below was actually
+> run; outputs are reproduced as printed, with credentials replaced by `<REDACTED>`.
 
 This is the procedure form of [[gitlab-ci-argocd-fastapi-onprem]] — same work, ordered as discrete
 numbered steps rather than narrated. That document carries the design rationale and the traps;
 this one is what to actually type, in order, to reproduce it. Steps are added here one at a time as
-each is re-verified in procedure form; this entry covers **Steps 1–3**.
+each is re-verified in procedure form; this entry covers **Steps 1–4**.
 
 ## Step 1 — Application development and testing
 
@@ -290,6 +290,155 @@ runner appears under the project or instance's **Settings → CI/CD → Runners*
 its own is sufficient — a pod can be `Running` while still failing to authenticate against GitLab,
 which only shows up in the second check.
 
+## Step 4 — The `.gitlab-ci.yml` pipeline
+
+**Goal:** a pipeline that tests, builds with Kaniko, and commits the new tag to the GitOps
+repository — and never holds a credential that can reach the cluster.
+
+### 4.1 Register the release job's one credential
+
+The `release` job needs write access to the GitOps repository, and nothing else. A project access
+token scoped that narrowly, stored as a masked, protected CI/CD variable:
+
+```bash
+curl -sS -X POST -H "PRIVATE-TOKEN: <REDACTED>" \
+  "http://<GITLAB_HOST>/api/v4/projects/<group>%2Fhello-api/variables" \
+  -d 'key=GITOPS_TOKEN' -d 'value=<REDACTED>' -d 'masked=true' -d 'protected=true'
+```
+
+> This lab actually ran with `masked=false` and `protected=false`, to keep the token visible in job
+> logs while the pipeline was still being debugged. That is a lab shortcut, not the procedure —
+> mask and protect this for real, exactly as written above. A masked value that fails GitLab's
+> masking rules (whitespace, too short, wrong charset) is rejected at variable-creation time, which
+> is a cheap check to hit before a job ever runs with it.
+
+### 4.2 Write the pipeline
+
+```yaml title=".gitlab-ci.yml"
+stages: [test, build, release]
+
+variables:
+  IMAGE: $CI_REGISTRY_IMAGE
+  TAG: $CI_COMMIT_SHORT_SHA
+
+test:
+  stage: test
+  image: python:3.13-slim
+  script:
+    - pip install --no-cache-dir -r requirements-dev.txt
+    - ruff check app tests
+    - pytest -q
+
+build:
+  stage: build
+  image:
+    name: gcr.io/kaniko-project/executor:debug
+    entrypoint: [""]
+  script:
+    - mkdir -p /kaniko/.docker
+    - echo "{\"auths\":{\"$CI_REGISTRY\":{\"auth\":\"$(printf '%s:%s' "$CI_REGISTRY_USER" "$CI_REGISTRY_PASSWORD" | base64 | tr -d '\n')\"}}}" > /kaniko/.docker/config.json
+    - /kaniko/executor --context "$CI_PROJECT_DIR" --dockerfile "$CI_PROJECT_DIR/Dockerfile"
+      --destination "$IMAGE:$TAG" --insecure --skip-tls-verify
+  rules:
+    - if: $CI_COMMIT_BRANCH == $CI_DEFAULT_BRANCH
+
+release:
+  stage: release
+  image: alpine/git:latest
+  script:
+    - 'git clone http://oauth2:$GITOPS_TOKEN@<GITLAB_HOST>/<group>/hello-api-gitops.git gitops'
+    - cd gitops
+    - 'sed -i "s|image: .*hello-api:.*|image: $IMAGE:$TAG|" overlays/prod/deployment.yaml'
+    - 'sed -i "s|value: \".*\" # APP_VERSION|value: \"$TAG\" # APP_VERSION|" overlays/prod/deployment.yaml'
+    - git config user.email "ci@example.internal"
+    - git config user.name "gitlab-ci"
+    - git commit -am "hello-api $TAG [skip ci]"
+    - git push
+  rules:
+    - if: $CI_COMMIT_BRANCH == $CI_DEFAULT_BRANCH
+```
+
+Two things here only make sense next to what step 5 seeds into the GitOps repository: the second
+`sed` matches a `# APP_VERSION` comment left on that line specifically so the pattern cannot also
+match `APP_ENV`'s `value:` line above it — an un-anchored `s|value: ".*"|...|` rewrites the *first*
+`value:` line it finds, which is `APP_ENV`, silently. And Kaniko needs `--insecure
+--skip-tls-verify` plus a hand-built `/kaniko/.docker/config.json` because this registry is reached
+over plain HTTP — a registry behind [[cert-manager-onprem]]'s CA does not need either.
+
+**`sed -i "s|image: …|…"` and the `[skip ci]` commit message both need single-quoting** in the YAML
+— see [Where this bit us](#where-this-bit-us) in [[gitlab-ci-argocd-fastapi-onprem]] for what an
+unquoted version of this exact line does to the parser.
+
+### 4.3 Push, and confirm it is valid YAML before trusting a pipeline run to tell you
+
+```bash
+python3 -c "import yaml; yaml.safe_load(open('.gitlab-ci.yml')); print('gitlab-ci.yml parses')"
+git add -A && git commit -m "hello-api with pipeline" && git push
+```
+
+### 4.4 Watch the pipeline
+
+```bash
+P=<group>%2Fhello-api
+until S=$(curl -sS -H "PRIVATE-TOKEN: <REDACTED>" \
+    "http://<GITLAB_HOST>/api/v4/projects/$P/pipelines?per_page=1" \
+  | python3 -c 'import json,sys; print(json.load(sys.stdin)[0]["status"])');
+  [ "$S" != running ] && [ "$S" != pending ] && [ "$S" != created ]; do sleep 15; done
+echo "pipeline: $S"
+```
+
+**Pass condition — the full sequence, not just the final status:**
+
+```
+pipeline 2: success
+  test     success
+  build    success
+  release  success
+```
+
+The `test` stage genuinely failed the first time this pipeline ran here — `ModuleNotFoundError: No
+module named 'app'`, from the `pytest`-vs-`python -m pytest` gap fixed in step 1.3's
+`pyproject.toml`. `build` and `release` reported `skipped`, not `failed`, when that happened: a
+skipped downstream job on a failed pipeline reads as "did not need to run," which is easy to misread
+as "nothing is wrong here" while scanning a job list quickly.
+
+### 4.5 Confirm the image and the GitOps commit both actually happened
+
+```bash
+curl -sS -H "PRIVATE-TOKEN: <REDACTED>" \
+  "http://<GITLAB_HOST>/api/v4/projects/$P/registry/repositories?tags=true"
+curl -sS -H "PRIVATE-TOKEN: <REDACTED>" \
+  "http://<GITLAB_HOST>/api/v4/projects/<group>%2Fhello-api-gitops/repository/commits?per_page=3"
+```
+
+```
+10.20.10.52:5050/root/hello-api ['57abb925']
+82c221f1 gitlab-ci hello-api 57abb925 [skip ci]
+```
+
+**Pass condition:** the tag in the registry and the short SHA in the GitOps commit message are the
+same string.
+
+### 4.6 Confirm `[skip ci]` actually stopped the loop
+
+The GitOps repository has its own pipeline, triggered by the release job's push — `[skip ci]` needs
+checking, not assuming, because the tag it stops is *execution*, not pipeline *creation*:
+
+```bash
+curl -sS -H "PRIVATE-TOKEN: <REDACTED>" \
+  "http://<GITLAB_HOST>/api/v4/projects/<group>%2Fhello-api-gitops/pipelines"
+```
+
+```
+pipeline 3 skipped sha 82c221f1
+```
+
+**Pass condition, stated precisely:** a pipeline record exists (`3`), against the commit that
+carried `[skip ci]` — it is not absent. Its `status` is `skipped`, not `success` or `failed`, and no
+job under it ever ran. "No pipeline was created" is the wrong thing to check for and would never
+pass; "a pipeline exists but nothing in it executed" is the actual claim, and this is what confirms
+it rather than assumes it.
+
 ## Verification checklist
 
 - [x] `ruff check app tests` passes clean
@@ -301,6 +450,10 @@ which only shows up in the second check.
 - [x] The runner-creation API returns a `glrt-…` token
 - [x] `kubectl -n gitlab-runner get pods` shows the runner pod `1/1 Running`
 - [x] The runner appears online under **Settings → CI/CD → Runners**
+- [x] `.gitlab-ci.yml` parses as YAML before it is pushed
+- [x] A pipeline run reports `test`, `build`, and `release` all `success`, in that order
+- [x] The pushed image tag in the registry matches the GitOps commit's short SHA
+- [x] The GitOps repository's own pipeline exists but shows `skipped`, not absent
 
 ## Rollback
 
@@ -317,6 +470,11 @@ Step 3: remove the runner and its namespace; this does not touch GitLab itself o
 helm -n gitlab-runner uninstall gitlab-runner
 kubectl delete namespace gitlab-runner
 ```
+
+Step 4: delete `.gitlab-ci.yml` and push, or revert the commit that added it — a runner with
+nothing to pick up does no harm sitting idle. The `GITOPS_TOKEN` CI/CD variable can be removed from
+**Settings → CI/CD → Variables** at the same time if the project is being decommissioned, not just
+paused.
 
 ## Where this bit us
 
@@ -335,12 +493,24 @@ in red-flag style (`## Please set … ##`) in the middle of otherwise normal Hel
 before the install reports success. Read the actual exit status and the pod's `Running` state, not
 the presence of a warning block, before deciding an install failed.
 
+**The pipeline's `test` stage failed on its first real run, not in review.** `ModuleNotFoundError:
+No module named 'app'` — the console-script-vs-module `pytest` gap step 1.3 now fixes proactively
+was originally found reactively, from a real pipeline failure. `build` and `release` reported
+`skipped`, which reads as "conditionally not needed" on a quick scan, not as "the stage before this
+one failed." Read pipeline results stage by stage, in order, not just the final status.
+
+**An unanchored `sed` on the deployment manifest would have silently patched the wrong line.** The
+release job's second `sed` rewrites `APP_VERSION`'s value; the manifest carries `env` entries for
+both `APP_VERSION` and `APP_ENV`, and a pattern of `value: ".*"` alone matches whichever comes
+first in the file — `APP_ENV`, not the one intended. The `# APP_VERSION` trailing comment in step
+5's manifest exists specifically to give the pattern something unambiguous to anchor on.
+
 ## Follow-ups
 
-- [ ] Step 4 — the `.gitlab-ci.yml` pipeline (test / build / release)
 - [ ] Step 5 — the GitOps repository and the Argo CD `Application`
 - [ ] Step 6 — the three-signal deploy verification
 - [ ] Pin the `gitlab-runner` chart version with `--version` — this run did not, and got away with it only because it ran once
+- [ ] Mask and protect `GITOPS_TOKEN` for real — this run set `masked=false`, `protected=false` to keep the token visible in job logs while debugging
 - [ ] Fold this procedure's steps back into a single ordered document once all are written, or keep it split by step — decide once there are more than a couple
 
 ## Related
