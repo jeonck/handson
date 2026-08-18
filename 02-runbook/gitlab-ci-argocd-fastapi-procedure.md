@@ -3,24 +3,25 @@ title: GitLab CI to Argo CD FastAPI deployment — step-by-step procedure
 date: 2026-08-18
 domain: runbook
 tags: [on-prem, cicd, gitops, python]
-stack: [python, fastapi, pytest, ruff, gitlab, gitlab-runner, kaniko, argocd, kubernetes]
-summary: Ordered procedure for taking the hello-api FastAPI service from source to a running pod through GitLab CI and Argo CD. Steps 1–5 — application development/testing, the container image, the GitLab Runner, the CI pipeline, and the GitOps repository with the Argo CD Application — are written up here; step 6 is added as a separate entry.
+stack: [python, fastapi, pytest, ruff, gitlab, gitlab-runner, kaniko, argocd, kubernetes, containerd]
+summary: Complete, ordered procedure for taking the hello-api FastAPI service from source to a verified running pod through GitLab CI and Argo CD — application, image, runner, pipeline, GitOps/Argo CD, and the three-signal deploy check, including a live containerd 2.2.x registry-config bug hit and fixed along the way.
 source: handson
-env: Steps 1–2 on Python 3.13.0, FastAPI 0.141.1, pytest 9.1.1, ruff 0.16.3, Podman 5.7.1 on macOS 14.7.5. Steps 3–5 on a two-EC2 substitute for on-prem — GitLab Omnibus 17.x on one instance, GitLab Runner 17.x (Kubernetes executor), Kaniko, and Argo CD v2.13.2 (non-HA) on a single-node kubeadm 1.31 cluster on the other
+env: Steps 1–2 on Python 3.13.0, FastAPI 0.141.1, pytest 9.1.1, ruff 0.16.3, Podman 5.7.1 on macOS 14.7.5. Steps 3–6 on a two-EC2 substitute for on-prem — GitLab Omnibus 17.x on one instance, GitLab Runner 17.x (Kubernetes executor), Kaniko, and Argo CD v2.13.2 (non-HA) on a single-node kubeadm 1.31 + containerd 2.2.1 cluster on the other
 verified: 2026-08-18
 verifiability: partial
-verifiability-note: Steps 1–2 ran in a lab with no gaps. Steps 3–5 ran on the EC2 substitute described in [[gitlab-ci-argocd-fastapi-onprem]]'s own verifiability-note — single-node rather than the real on-prem cluster, GitLab and its registry reached over plain HTTP, the release job's token left unmasked and unprotected for lab debugging, and Argo CD installed non-HA rather than via [[argocd-helm-ha-install]]'s chart.
-duration: 75–110 min for steps 1–5
-risk: low
+verifiability-note: Steps 1–2 ran in a lab with no gaps. Steps 3–6 ran on the EC2 substitute described in [[gitlab-ci-argocd-fastapi-onprem]]'s own verifiability-note — single-node rather than the real on-prem cluster, GitLab and its registry reached over plain HTTP rather than cert-manager-issued TLS, the release job's token left unmasked and unprotected for lab debugging, and Argo CD installed non-HA rather than via [[argocd-helm-ha-install]]'s chart.
+duration: 100–140 min for the full procedure
+risk: medium
 ---
 
-> **Verified 2026-08-17 (steps 1–2) and 2026-08-18 (steps 3–5).** Every command below was actually
-> run; outputs are reproduced as printed, with credentials replaced by `<REDACTED>`.
+> **Verified 2026-08-17 (steps 1–2) and 2026-08-18 (steps 3–6).** Every command below was actually
+> run; outputs are reproduced as printed, with credentials replaced by `<REDACTED>`. This procedure
+> is now complete end to end — a pipeline run and a running pod, with the three-signal check in
+> step 6.4 confirming they agree.
 
 This is the procedure form of [[gitlab-ci-argocd-fastapi-onprem]] — same work, ordered as discrete
 numbered steps rather than narrated. That document carries the design rationale and the traps;
-this one is what to actually type, in order, to reproduce it. Steps are added here one at a time as
-each is re-verified in procedure form; this entry covers **Steps 1–5**.
+this one is what to actually type, in order, to reproduce it. All **six steps** are written up here.
 
 ## Step 1 — Application development and testing
 
@@ -582,6 +583,118 @@ Argo CD cannot reach the repository at all and points straight back at 5.3's cre
 **`Synced/Progressing` is not the finish line here** — it is where step 6 picks up, because
 `Synced` describes Git and the cluster agreeing on manifests, not a running pod.
 
+## Step 6 — The three-signal deploy verification
+
+**Goal:** confirm a running pod is actually serving the code CI built — not just that Argo CD
+agrees with Git, which the previous step already showed is not the same claim.
+
+### 6.1 Trust the registry over plain HTTP, correctly, the first time
+
+This lab's registry has no CA-signed certificate, so containerd needs an explicit insecure-registry
+entry before the kubelet can pull anything from it:
+
+```bash
+sudo mkdir -p /etc/containerd/certs.d/<GITLAB_HOST>:5050
+cat <<H | sudo tee /etc/containerd/certs.d/<GITLAB_HOST>:5050/hosts.toml
+server = "http://<GITLAB_HOST>:5050"
+[host."http://<GITLAB_HOST>:5050"]
+  capabilities = ["pull", "resolve"]
+  skip_verify = true
+H
+sudo sed -i "s|config_path = '[^']*'|config_path = '/etc/containerd/certs.d'|" /etc/containerd/config.toml
+sudo systemctl restart containerd
+```
+
+**The single most expensive command in this entire procedure is the `sed` above, and specifically
+what it does *not* write.** `containerd config default` on containerd 2.2.x fills `config_path`
+with a colon-separated value — `/etc/containerd/certs.d:/etc/docker/certs.d` — and that value is
+silently unsupported for CRI registry hosts resolution
+([containerd#12808](https://github.com/containerd/containerd/issues/12808)): no error, no log line,
+just a pull that never works. `containerd config dump` shows the colon-separated value sitting there
+looking correct. **Write a single path, with no colon**, as the command above does.
+
+### 6.2 Verify the fix with the tool that actually matches the kubelet's code path
+
+```bash
+sudo crictl pull <GITLAB_HOST>:5050/root/hello-api:<TAG>
+```
+
+```
+E... failed to authorize: failed to fetch anonymous token: ... 403 Forbidden
+```
+
+**This `403` is the pass condition for this specific check, not a failure.** `crictl pull` with no
+credentials hits the same anonymous-pull rejection any unauthenticated client gets against a
+Private GitLab project — it proves containerd is now resolving the registry over plain HTTP
+(compare against the error in 6.1's absence: `http: server gave HTTP response to HTTPS client`,
+which is what a still-broken config produces here instead). The kubelet's actual pull, a few steps
+below, carries the `imagePullSecrets` credentials from step 5.3 and gets past this same check.
+
+**Do not "confirm" this with `ctr images pull --hosts-dir <dir> ...`.** Passing `--hosts-dir`
+explicitly makes the standalone `ctr` client bypass the daemon's own configuration and read that
+directory directly — it can succeed (or get further, into the same 403 above) while the actual CRI
+image service, the one kubelet talks to, is still broken. This is not a hypothetical: it is exactly
+how the config_path bug in 6.1 went undetected on this run's first pass.
+
+### 6.3 Watch the pods actually come up
+
+```bash
+kubectl -n hello-api delete pods -l app=hello-api   # clear any pods stuck in ImagePullBackOff's cached backoff
+kubectl -n hello-api get pods -o wide
+```
+
+```
+hello-api-9f64d66fc-6tnhr   1/1   Running
+hello-api-9f64d66fc-9vj5s   1/1   Running
+```
+
+```bash
+kubectl -n argocd get application hello-api \
+  -o jsonpath='{.status.sync.status}/{.status.health.status}'
+```
+
+```
+Synced/Healthy
+```
+
+**`Synced/Degraded` can sit unchanged for ten minutes or more while pods are stuck in
+`ImagePullBackOff` underneath it** — the top-level Argo CD status does not surface this on its own.
+`kubectl -n hello-api get pods` and `kubectl describe pod` are what show the real state; do not
+wait on the `Application`'s health field alone to tell you a deploy has stalled.
+
+### 6.4 The three signals, checked, not assumed
+
+```bash
+# 1. what CI built
+echo "$CI_COMMIT_SHORT_SHA"           # or: the tag from step 4.5's registry check
+
+# 2. what is actually running
+kubectl -n hello-api get pods \
+  -o jsonpath='{range .items[*]}{.status.containerStatuses[0].imageID}{"\n"}{end}'
+
+# 3. what the application itself believes it is
+kubectl -n hello-api port-forward svc/hello-api 18080:80 &
+sleep 2
+curl -sS http://localhost:18080/healthz
+kill %1
+```
+
+```
+57abb925
+
+10.20.10.52:5050/root/hello-api@sha256:59af98942e796e64727a2063fd3a62b0054d398a8eaeb6ddc150befbebf1010a
+10.20.10.52:5050/root/hello-api@sha256:59af98942e796e64727a2063fd3a62b0054d398a8eaeb6ddc150befbebf1010a
+
+{"status":"ok","version":"57abb925","environment":"prod"}
+```
+
+**Pass condition:** the tag from signal 1 (`57abb925`), the digest from signal 2 (identical across
+both pods — a mismatch between replicas is its own bug), and the `version` field from signal 3 all
+trace back to the same build. Getting `Synced/Healthy` in 6.3 without checking this is trusting
+that Argo CD's bookkeeping and the running process agree — which section 7 of
+[[gitlab-ci-argocd-fastapi-onprem]] explains is exactly the assumption that fails silently when the
+`release` job pushes to Git but the registry push itself did not land.
+
 ## Verification checklist
 
 - [x] `ruff check app tests` passes clean
@@ -601,6 +714,12 @@ Argo CD cannot reach the repository at all and points straight back at 5.3's cre
 - [x] The `gitops-repo` secret carries the `argocd.argoproj.io/secret-type=repository` label
 - [x] `kubectl apply -f argocd/hello-api.yaml` reports `application.argoproj.io/hello-api created`
 - [x] The `Application`'s sync status moves off `Unknown/Unknown` within a couple of minutes
+- [x] `/etc/containerd/certs.d/<host>:<port>/hosts.toml` exists with the plain-HTTP `server` and `skip_verify = true`
+- [x] `config_path` in `/etc/containerd/config.toml` is a single path, not colon-separated
+- [x] `crictl pull` against the registry reaches an auth response (`403`), not a TLS error
+- [x] `kubectl -n hello-api get pods` shows every replica `1/1 Running`
+- [x] `kubectl -n argocd get application hello-api` reports `Synced/Healthy`
+- [x] The CI pipeline's tag, every running pod's `imageID`, and `/healthz`'s `version` field all agree
 
 ## Rollback
 
@@ -630,6 +749,15 @@ carries a finalizer for that — check before assuming a clean cluster afterward
 kubectl -n argocd delete application hello-api
 kubectl delete namespace hello-api   # only if step 6's workload should go too
 kubectl -n argocd delete secret gitops-repo
+```
+
+Step 6: the containerd insecure-registry config in 6.1 is node-level, not workload-level — removing
+it affects every future pull from this registry on this node, not just `hello-api`. Only revert it
+if the node is being decommissioned or the registry is going away.
+
+```bash
+sudo rm -rf /etc/containerd/certs.d/<GITLAB_HOST>:5050
+sudo systemctl restart containerd
 ```
 
 ## Where this bit us
@@ -668,16 +796,40 @@ generic "repository not found" or auth-failure condition — indistinguishable, 
 status alone, from the URL itself being wrong. Check the label on the secret before re-checking the
 URL a third time.
 
+**`containerd 2.2.x` silently ignores a colon-separated `config_path` — the single most expensive
+trap in this whole procedure.** `containerd config default` on this version writes `config_path =
+'/etc/containerd/certs.d:/etc/docker/certs.d'` into the CRI images plugin, and that value looks
+correct in `containerd config dump`. It is not: containerd 2.2.x does not support a colon-separated
+multi-path value for CRI registry hosts resolution
+([containerd#12808](https://github.com/containerd/containerd/issues/12808)) — it neither errors nor
+falls back, the entry just never resolves. `ctr images pull --hosts-dir <dir>` succeeding is not
+evidence the fix worked, either: that flag makes `ctr` bypass the daemon's configuration entirely
+and read the given directory directly, so it tests the directory, not the config. **`crictl pull`
+is what actually exercises the kubelet's code path** — verify there, not with `ctr … --hosts-dir`.
+
+**A `Synced`/`Degraded` Argo CD `Application` can sit unchanged for ten minutes or more** while the
+pods underneath it are stuck in `ImagePullBackOff` — the top-level health rollup does not surface
+this on its own. `kubectl get pods` and `kubectl describe pod` are what show the real state.
+
+**A private GitLab project correctly returns `403` to an anonymous registry pull, and that is not a
+bug to chase.** After fixing the containerd config, the very next error — `access forbidden` from
+`/jwt/auth` — looked like the same class of problem and was not: GitLab was doing its job, refusing
+credential-less access to a Private project (the default visibility). The fix was already in place
+from step 5.3 (`imagePullSecrets: [gitlab-registry]`) — the false lead was testing registry
+reachability with an anonymous pull instead of `curl`, which cannot distinguish a broken registry
+from a correctly-secured one.
+
 ## Follow-ups
 
-- [ ] Step 6 — the three-signal deploy verification
 - [ ] Pin the `gitlab-runner` chart version with `--version` — this run did not, and got away with it only because it ran once
 - [ ] Mask and protect `GITOPS_TOKEN` for real — this run set `masked=false`, `protected=false` to keep the token visible in job logs while debugging
-- [ ] Fold this procedure's steps back into a single ordered document once all are written, or keep it split by step — decide once there are more than a couple
+- [ ] Re-run this procedure against a real multi-node on-prem cluster and a CA-signed registry — every step here ran on the single-node, plain-HTTP EC2 substitute described in each step's env
+- [ ] Decide whether this procedure's six steps should fold back into a single document now that all are written, or stay split — revisit once it needs its next edit
 
 ## Related
 
-[[gitlab-ci-argocd-fastapi-onprem]] — the full narrative document this procedure is extracted from, with the design rationale and every trap hit across the whole pipeline.
+[[gitlab-ci-argocd-fastapi-onprem]] — the full narrative document this procedure is extracted from, with the design rationale, section 7's three-signal argument, and every trap hit across the whole pipeline.
 [[pod-crashloopbackoff]] — why liveness must not check a database, referenced from the endpoint split in 1.1.
 [[onprem-3node-kubeadm-ubuntu]] — the cluster the image built in step 2 eventually runs on, using containerd rather than Docker.
 [[argocd-helm-ha-install]] — the HA chart this lab substituted away from in step 5.1, and the same unpinned-chart-version risk.
+[[cert-manager-onprem]] — the CA-signed registry certificate a real deployment uses instead of step 6.1's plain-HTTP insecure-registry config.
