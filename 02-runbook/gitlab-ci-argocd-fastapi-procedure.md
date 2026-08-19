@@ -847,3 +847,4 @@ from a correctly-secured one.
 [[onprem-3node-kubeadm-ubuntu]] — the cluster the image built in step 2 eventually runs on, using containerd rather than Docker.
 [[argocd-helm-ha-install]] — the HA chart this lab substituted away from in step 5.1, and the same unpinned-chart-version risk.
 [[cert-manager-onprem]] — the CA-signed registry certificate a real deployment uses instead of step 6.1's plain-HTTP insecure-registry config.
+[[bruno-api-client]] — a scriptable REST client for exercising `hello-api`'s endpoints by hand, or as a CI smoke-test stage alongside step 6.4's three-signal check.
