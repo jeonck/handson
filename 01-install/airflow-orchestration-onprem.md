@@ -851,6 +851,8 @@ KubernetesExecutor in this document.
 [[longhorn-storage-onprem]] — supplies the `longhorn` default StorageClass, and is why the
 `ReadWriteMany` logs volume costs an NFS share-manager pod. Its `100Gi`-scale capacity warnings apply
 directly to the chart's triggerer and worker volume defaults.
+[[dagster-local-quickstart]] — the other orchestrator in this repo, software-defined-assets rather
+than tasks, verified locally rather than on this cluster.
 [[postgresql-cnpg-onprem]] — where the metadata database comes from. Not written yet.
 [[minio-object-storage-onprem]] — the object storage the smoke-test DAG and remote logging both use.
 Not written yet.

@@ -403,3 +403,4 @@ runner for something a CI pipeline can already do for free from the command line
 
 [[gitlab-ci-argocd-fastapi-procedure]] — the pipeline this collection's JUnit report is written to plug into, and the service (`hello-api`) this write-up tested against.
 [[gitlab-ci-argocd-fastapi-onprem]] — section 7's three-signal deploy check, which a Bruno smoke-test stage would complement rather than replace.
+[[dagster-local-quickstart]] — the same "verify via CLI/curl, not a browser" approach applied to a local service, there a Dagster webserver instead of `hello-api`.
