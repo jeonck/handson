@@ -6,17 +6,17 @@ tags: [api, testing, developer-tools, cicd]
 stack: [bruno, fastapi]
 summary: Bruno stores each request as a plaintext .bru file inside the collection folder instead of one exported JSON blob, so a request change is a normal, reviewable git diff. Verified with the CLI end to end — a real collection, real pass/fail/connection-refused output, real exit codes, and a JUnit report a GitLab CI job could consume directly.
 source: handson
-env: Bruno CLI (@usebruno/cli) 4.0.0 via npx, Node.js 24.10.0, npm 11.6.0, tested against a local FastAPI service on macOS 14.7.5
-verified: 2026-08-19
+env: Bruno CLI (@usebruno/cli) 4.0.0 via npx and Bruno desktop 4.0.0 (Homebrew cask), Node.js 24.10.0, npm 11.6.0, tested against a local FastAPI service on macOS 14.7.5
+verified: 2026-08-20
 verifiability: partial
-verifiability-note: The CLI (`bru run`) was fully exercised. The desktop GUI app was not — this environment has no display to drive it, so collection editing, the request builder UI, and GUI-only features (cookie jar, OAuth2 flows) are unverified here.
-duration: 20–30 min
+verifiability-note: The CLI (`bru run`) and the desktop GUI's request builder and Runner were both exercised, driven via computer-use screen automation rather than by hand. GUI-only features not touched by that pass — the cookie jar, OAuth2 flows, and Git-integration panel — are still unverified.
+duration: 30–40 min
 risk: low
 ---
 
-> **Verified 2026-08-19.** Every command below ran against a real local FastAPI service, in a
-> scratch directory, using the actual Bruno CLI — not the desktop app. Outputs are reproduced as
-> printed.
+> **Verified 2026-08-19 (CLI) and 2026-08-20 (desktop GUI).** Every command and every click below
+> ran for real — the CLI in a scratch directory, the GUI installed via Homebrew and driven against
+> the same local FastAPI service. Outputs and screenshots are reproduced as observed.
 
 Bruno is a REST client in the same space as Postman or Insomnia, with one structural difference
 that matters more than the UI: **a collection is a folder of plaintext `.bru` files**, not one
@@ -44,9 +44,15 @@ npm install -g @usebruno/cli
 bru --version
 ```
 
-The desktop GUI app (for building and editing collections visually) installs separately from
-[usebruno.com](https://www.usebruno.com/downloads) or via Homebrew (`brew install --cask bruno`) —
-not exercised in this write-up, since this environment has no display.
+The desktop GUI app installs separately, from [usebruno.com](https://www.usebruno.com/downloads) or
+via Homebrew:
+
+```bash
+brew install --cask bruno
+```
+
+Both ship the same version number (`4.0.0` here) and read the same `.bru` files — a collection
+built with one opens in the other with no conversion step, confirmed below.
 
 ## Anatomy of a collection
 
@@ -278,6 +284,57 @@ smoke-test:
 `--reporter-json` and `--reporter-html` exist alongside `--reporter-junit` for a machine-readable
 or a human-readable artifact instead of (or as well as) the JUnit one.
 
+## The desktop GUI
+
+**Same collection, opened two ways, gave identical results — that parity is the actual point of
+the plaintext `.bru` format**, not a separate feature to learn. `File → Open Collection` on the
+`hello-api-collection` folder built with the CLI above loaded it into the GUI with all three
+requests, both environments, and the `bruno.json` collection name intact — no import step, because
+there was nothing to convert.
+
+Sending `healthz` from the GUI with the `local` environment selected returned the same `200 OK`
+body as the CLI run, and its **Tests** tab showed the identical result the CLI printed to the
+terminal:
+
+```
+Tests (1), Passed: 1, Failed: 0
+  ✓ version comes from the environment, not a hardcoded default
+Assertions (2), Passed: 2, Failed: 0
+  ✓ res.status: eq 200
+  ✓ res.body.status: eq ok
+```
+
+The GUI also has its own **Runner** (the running-figure icon next to *Initialize Git*) — the visual
+equivalent of `bru run` across a whole collection, with per-request pass/fail and a
+downloadable report:
+
+```
+Filter by:  All 3   Passed 3   Failed 0   Skipped 0
+
+healthz  200 - OK
+  ✓ version comes from the environment, not a hardcoded default
+  ✓ res.status: eq 200
+  ✓ res.body.status: eq ok
+root     200 - OK
+  ✓ res.status: eq 200
+echo     200 - OK
+  ✓ res.status: eq 200
+  ✓ res.body.received.hello: eq bruno
+```
+
+Two real differences worth knowing before assuming the two interfaces are interchangeable:
+
+- **CSV/JSON-parameterized runs are paywalled in the GUI Runner** — the "Run with Parameters" panel
+  shows a "🔒 UPGRADE" badge next to Bruno Ultimate. The same capability is a free CLI flag:
+  `--csv-file-path` / `--json-file-path`, exercised in `bru run --help`'s own examples above, no
+  license involved. If parameterized runs matter, the CLI has them and the free GUI does not.
+- **The `Ctrl/Cmd+Shift+G` file-open sheet on macOS could not navigate into `/private/tmp/...`** —
+  typing that path and pressing Return silently did nothing, repeatedly, while the identical
+  `~/Documents/...` path resolved and opened on the first try. Whether this is Bruno's own file
+  dialog or a macOS sandbox boundary around `/private/tmp` was not narrowed down; the practical
+  answer is the same either way — **keep a collection you intend to open in the GUI somewhere under
+  the user's home directory**, not a system scratch/temp path.
+
 ## Verification checklist
 
 - [x] `npx --yes @usebruno/cli --version` prints a version with no account or install step
@@ -286,6 +343,10 @@ or a human-readable artifact instead of (or as well as) the JUnit one.
 - [x] A broken assertion prints `✗ FAIL` with the expected-vs-actual values, and exits `1`
 - [x] A dead target prints `ECONNREFUSED` distinctly from an assertion failure, and also exits `1`
 - [x] `--reporter-junit` produces XML GitLab's `artifacts: reports: junit:` can consume directly
+- [x] The same collection folder opens in the desktop GUI with no import step
+- [x] A request sent from the GUI returns the same body, and its Tests tab shows the same pass/fail as the CLI
+- [x] The GUI's own Runner reproduces `bru run`'s result across the whole collection
+- [x] Removing a stray `environments/*.bak` file makes the GUI's phantom extra environment entry disappear
 
 ## Rollback
 
@@ -294,6 +355,12 @@ Nothing outside the working directory and `npm`'s package cache is touched:
 ```bash
 rm -rf hello-api-collection
 npm uninstall -g @usebruno/cli   # only if installed globally in the first place
+```
+
+Uninstall the desktop app the same way it was installed:
+
+```bash
+brew uninstall --cask bruno
 ```
 
 ## Where this bit us
@@ -309,10 +376,27 @@ first, and the real `ECONNREFUSED` case showed up as expected. **Check what is a
 a test port before trusting what a "server is down" test tells you** — a coincidentally-occupied
 port is indistinguishable from a real bug until you look.
 
+**A `sed -i.bak` leftover became a second, phantom environment in the GUI's picker.** Copying the
+collection for the GUI test carried along `environments/local.bru.bak`, a backup file created
+earlier while editing the port in `local.bru` with `sed`. The GUI's environment dropdown listed it
+as a *second* environment named `local.bru` — it strips only the trailing `.bak` rather than
+recognizing "not a `.bru` file, skip it." Selecting that phantom entry would leave every `{{var}}`
+unresolved, since it carries no actual variables. Removing the stray file made it disappear from
+the picker on the next open, confirming the cause rather than assuming it. **Anything left in
+`environments/` gets offered as a real environment** — an editor backup, a `.orig` from a merge
+conflict, or an old copy someone forgot to delete all show up as a selectable, broken option.
+
+**Parameterized runs are a paid-tier feature in the GUI Runner but a free flag in the CLI.** The
+GUI's "Run with Parameters" panel (CSV/JSON iteration) is gated behind a "Bruno Ultimate" upgrade
+prompt; `bru run --csv-file-path data.csv --parallel` from the CLI needs no license at all. Worth
+knowing before assuming both interfaces offer the same feature set, or before recommending the GUI
+runner for something a CI pipeline can already do for free from the command line.
+
 ## Follow-ups
 
-- [ ] Exercise the desktop GUI app — collection editing, the request builder, OAuth2 flows, and the cookie jar are all unverified here
 - [ ] Try the secrets provider flags (`--secrets-env-file`, `BRUNO_*` keys) against a real secrets backend rather than a plain `.bru` environment file
+- [ ] Exercise GUI-only surfaces not touched by this pass: the cookie jar, OAuth2 flows, and the Git-integration panel visible in the toolbar (`Initialize Git`)
+- [ ] Narrow down whether the `/private/tmp` file-dialog navigation failure is Bruno-specific or a general macOS sandbox boundary, by testing the same "Go to Folder" path in another sandboxed Electron app
 - [ ] Add a Bruno smoke-test stage to [[gitlab-ci-argocd-fastapi-procedure]]'s pipeline — a `/healthz` + `/readyz` check against the just-deployed `hello-api` would be a fourth, independent confirmation alongside that procedure's three-signal check in step 6.4
 
 ## Related
