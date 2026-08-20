@@ -543,3 +543,4 @@ API's `/api/v4/version`, before concluding a service is down.
 [[cert-manager-onprem]] — the internal CA the registry certificate comes from, which the nodes must trust.
 [[pod-crashloopbackoff]] — when the new image starts and immediately dies, and why liveness must not check a database.
 [[onprem-3node-kubeadm-ubuntu]] — the cluster underneath, running containerd rather than Docker.
+[[argo-rollouts-canary-kind]] — replacing this document's plain `Deployment` with a canary `Rollout` would give section 7's deploy check an actual progression window to verify during, instead of an instant cutover.

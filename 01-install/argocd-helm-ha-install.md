@@ -266,3 +266,4 @@ kubectl delete namespace argocd
 [[k8s-node-drain-replace]] — replacing the node Argo CD landed on. The controller runs at 1 replica, so drain order matters.
 [[schedulable-node-budget]] — decides `redis-ha` before this document is opened. On the on-prem cluster the answer is already `false`.
 [[onprem-3node-kubeadm-ubuntu]] — the cluster whose taint decision produces the two-node budget in section 2.1.
+[[argo-rollouts-canary-kind]] — the separate controller that adds gradual, health-checked deploys on top of what Argo CD syncs; a `Rollout` drops in where a `Deployment` would otherwise go.
