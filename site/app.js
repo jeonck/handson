@@ -195,6 +195,27 @@ function viewDashboard() {
     </div>
   </div>
 
+  <div class="section-head"><h2>Writing rhythm</h2><span class="hint">last 12 weeks</span></div>
+  <div class="panel">
+    <div class="heat">${heat}</div>
+    <div class="heat-legend">less <i data-c="0"></i><i data-c="1"></i><i data-c="2"></i><i data-c="3"></i> more</div>
+  </div>
+
+  ${
+    topStacks.length
+      ? `<div class="section-head"><h2>Stacks</h2><span class="spacer"></span><a class="more" href="#/stacks">All ${DB.stacks.length}</a></div>
+         <div class="tagcloud">${topStacks
+           .map(
+             (t) =>
+               `<a href="#/notes?stack=${encodeURIComponent(t.name)}"><b class="mono">${esc(t.name)}</b><small>${t.count}</small></a>`
+           )
+           .join("")}</div>`
+      : ""
+  }
+
+  <div class="section-head"><h2>Recent docs</h2><span class="spacer"></span><a class="more" href="#/notes">All ${s.notes}</a></div>
+  ${recent.length ? `<div class="cards">${recent.map(noteCard).join("")}</div>` : emptyVault()}
+
   <div class="section-head"><h2>Follow-ups</h2><span class="hint">${s.tasksOpen} open</span><span class="spacer"></span><a class="more" href="#/tasks">All</a></div>
   ${
     tasks.length
@@ -221,27 +242,6 @@ function viewDashboard() {
          <p class="capture-note">A <b>partly unproven</b> document ran, with a named part it could not exercise. One that is <b>beyond the lab</b> is not cleared by re-running the lab at all — re-reading it as "just not done yet" is how it stays undone.</p>`
       : ""
   }
-
-  <div class="section-head"><h2>Writing rhythm</h2><span class="hint">last 12 weeks</span></div>
-  <div class="panel">
-    <div class="heat">${heat}</div>
-    <div class="heat-legend">less <i data-c="0"></i><i data-c="1"></i><i data-c="2"></i><i data-c="3"></i> more</div>
-  </div>
-
-  ${
-    topStacks.length
-      ? `<div class="section-head"><h2>Stacks</h2><span class="spacer"></span><a class="more" href="#/stacks">All ${DB.stacks.length}</a></div>
-         <div class="tagcloud">${topStacks
-           .map(
-             (t) =>
-               `<a href="#/notes?stack=${encodeURIComponent(t.name)}"><b class="mono">${esc(t.name)}</b><small>${t.count}</small></a>`
-           )
-           .join("")}</div>`
-      : ""
-  }
-
-  <div class="section-head"><h2>Recent docs</h2><span class="spacer"></span><a class="more" href="#/notes">All ${s.notes}</a></div>
-  ${recent.length ? `<div class="cards">${recent.map(noteCard).join("")}</div>` : emptyVault()}
   `;
 }
 
