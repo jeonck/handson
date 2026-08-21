@@ -4,7 +4,7 @@ date: 2026-08-21
 domain: install
 tags: [python, web, api, architecture]
 stack: [fastapi, python, jinja2, sqlite, pytest]
-summary: A notes CRUD split into model / view / controller in 133 lines, with sqlite3 from the standard library instead of an ORM. The layering earns its keep exactly once — the same Pydantic model validates a JSON body and an HTML form — and the browser form path was broken until a real form POST was tried, returning 500 where it owed a 422.
+summary: A notes CRUD split into model / view / controller in 151 lines, with sqlite3 from the standard library instead of an ORM. The layering earns its keep exactly once — the same Pydantic model validates a JSON body and an HTML form — and the browser form path was broken until a real form POST was tried, returning 500 where it owed a 422.
 source: handson
 env: FastAPI 0.141.1 · Jinja2 3.1.6 · python-multipart · pytest · sqlite3 (stdlib) · Python 3.13.0 on macOS 14.7.5
 verified: 2026-08-21
@@ -14,7 +14,7 @@ risk: low
 ---
 
 > **Verified 2026-08-21.** Every response body below came from `curl` against a running uvicorn, and
-> the 7-test suite passes. The 500 in [Where this bit us](#where-this-bit-us) is what the app
+> the 11-test suite passes. The 500 in [Where this bit us](#where-this-bit-us) is what the app
 > actually returned before it was fixed.
 
 **FastAPI is not an MVC framework, and pretending otherwise is how these projects bloat.** There is
@@ -99,6 +99,16 @@ def create_note(data: NoteIn) -> Note:
     return Note(id=cur.lastrowid, **data.model_dump())
 
 
+def update_note(note_id: int, data: NoteIn) -> Note | None:
+    """PUT is a full replace, so NoteIn is exactly the right shape — no new class."""
+    with connect() as conn:
+        cur = conn.execute(
+            "UPDATE notes SET title = ?, body = ? WHERE id = ?",
+            (data.title, data.body, note_id),
+        )
+    return Note(id=note_id, **data.model_dump()) if cur.rowcount else None
+
+
 def delete_note(note_id: int) -> bool:
     with connect() as conn:
         return conn.execute("DELETE FROM notes WHERE id = ?", (note_id,)).rowcount > 0
@@ -142,6 +152,14 @@ def api_get(note_id: int):
 @router.post("/api/notes", response_model=models.Note, status_code=201)
 def api_create(data: models.NoteIn):
     return models.create_note(data)
+
+
+@router.put("/api/notes/{note_id}", response_model=models.Note)
+def api_update(note_id: int, data: models.NoteIn):
+    note = models.update_note(note_id, data)
+    if note is None:
+        raise HTTPException(status_code=404, detail="note not found")
+    return note
 
 
 @router.delete("/api/notes/{note_id}", status_code=204)
@@ -248,6 +266,48 @@ curl -sS localhost:18500/notes
 Same data, same model calls, two representations — which is the claim MVC is making and the one
 worth actually checking rather than assuming.
 
+## PUT replaces, it does not patch
+
+`PUT` needed **no new schema** — the follow-up that asked for this predicted a `NoteUpdate` class,
+and that prediction was wrong. `PUT` means *replace the resource with this representation*, so the
+body a client sends is exactly `NoteIn`: every field, required ones required. Reusing it is not a
+shortcut, it is what the verb means.
+
+```bash
+curl -sS -X POST localhost:18500/api/notes -H 'content-type: application/json' \
+  -d '{"title":"before","body":"old"}'
+curl -sS -X PUT localhost:18500/api/notes/1 -H 'content-type: application/json' \
+  -d '{"title":"after","body":"new"}'
+```
+
+```json
+{"title":"after","body":"new","id":1}
+```
+
+The behaviour worth checking is what happens when a field is **left out**:
+
+```bash
+curl -sS -X PUT localhost:18500/api/notes/1 -H 'content-type: application/json' \
+  -d '{"title":"after"}'
+```
+
+```json
+{"title":"after","body":"","id":1}
+```
+
+**`body` came back empty, not `"new"`.** `NoteIn.body` defaults to `""`, so an omitted field is sent
+to the model as an empty string and the row is overwritten with it. That is correct `PUT` semantics
+and it surprises people anyway — the request looks like "just change the title" and it silently
+cleared the other column. There is a test pinning it (`test_put_omitting_body_clears_it_because_put_replaces`)
+so nobody later "fixes" it into a partial update by accident.
+
+**A partial update is `PATCH`, and that is the verb that needs the extra class** — a `NoteUpdate`
+with every field optional, applied with `model_dump(exclude_unset=True)` so "absent" and "explicitly
+set to empty" stay distinguishable. Not built here, because nothing needs it yet.
+
+`rowcount` carries the 404: `UPDATE ... WHERE id = ?` against a missing row affects zero rows, so
+`update_note` returns `None` and the controller raises. No extra `SELECT` to check existence first.
+
 ## The checks that can fail
 
 ```python title="tests/test_notes.py (excerpt)"
@@ -265,7 +325,7 @@ def test_view_escapes_html():
 ```
 
 ```
-7 passed, 1 warning in 0.28s
+11 passed, 1 warning in 0.34s
 ```
 
 The escaping test is worth keeping even though Jinja2 autoescapes `.html` by default — **it is a
@@ -280,11 +340,13 @@ sending the payload through the real view:
 
 - [x] `POST /api/notes` returns `201` and the assigned `id`
 - [x] `GET /notes` renders the same rows as `GET /api/notes`
-- [x] `GET /api/notes/999` returns `404`, and so does `DELETE` on a missing id
+- [x] `GET /api/notes/999` returns `404`, and so does `DELETE` and `PUT` on a missing id
+- [x] `PUT` replaces every field — omitting `body` clears it rather than keeping the old value
+- [x] `PUT` rejects an empty title `422`, the same rule `POST` enforces, from the same model
 - [x] An empty title is rejected `422` over **both** JSON and form encoding — the second one regressed once, see below
 - [x] A browser-style `POST /notes` (url-encoded, no JSON) returns `303` and the row persists
 - [x] `<script>` in a title comes back HTML-escaped from the view — **payload actually sent, not assumed**
-- [x] `pytest -q` reports `7 passed`
+- [x] `pytest -q` reports `11 passed`
 
 ## Rollback
 
@@ -345,7 +407,8 @@ column is actually true.
 
 ## Follow-ups
 
-- [ ] Add `PUT /api/notes/{id}` — the one CRUD verb skipped here, and the one where a partial-update schema (`NoteUpdate` with optional fields) first genuinely earns a separate class
+- [x] Add `PUT /api/notes/{id}` — done, and it needed **no** new schema; see [PUT replaces, it does not patch](#put-replaces-it-does-not-patch). A `NoteUpdate` with optional fields is what `PATCH` would need, not `PUT`
+- [ ] Add `PATCH /api/notes/{id}` — this is where `NoteUpdate` with optional fields and `model_dump(exclude_unset=True)` actually earns its place
 - [ ] Swap `sqlite3` for the CloudNativePG instance in [[postgresql-cnpg-onprem]] and confirm only `models.py` changes — the claim this layering makes, currently untested
 - [ ] Point [[bruno-api-client]]'s collection at these endpoints so the API contract has a check outside the app's own test suite
 - [ ] Containerise and deploy through [[gitlab-ci-argocd-fastapi-procedure]] — that pipeline's `hello-api` is a single file, and this is the version with something to actually deploy
