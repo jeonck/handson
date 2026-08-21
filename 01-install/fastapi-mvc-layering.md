@@ -14,7 +14,7 @@ risk: low
 ---
 
 > **Verified 2026-08-21.** Every response body below came from `curl` against a running uvicorn, and
-> the 20-test suite passes. The 500 in [Where this bit us](#where-this-bit-us) is what the app
+> the 23-test suite passes. The 500 in [Where this bit us](#where-this-bit-us) is what the app
 > actually returned before it was fixed.
 
 **FastAPI is not an MVC framework, and pretending otherwise is how these projects bloat.** There is
@@ -208,6 +208,14 @@ def page_list(request: Request):
 def page_create(data: Annotated[models.NoteIn, Form()]):
     models.create_note(data)
     return RedirectResponse("/notes", status_code=303)
+
+
+@router.post("/notes/{note_id}/delete")
+def page_delete(note_id: int):
+    """Browsers cannot send DELETE from a form, so the view posts here instead."""
+    if not models.delete_note(note_id):
+        raise HTTPException(status_code=404, detail="note not found")
+    return RedirectResponse("/notes", status_code=303)
 ```
 
 **`Annotated[models.NoteIn, Form()]` is where the layering actually pays.** The identical model that
@@ -232,7 +240,12 @@ into a follow-up GET, which is the whole point of post/redirect/get.
 </form>
 <ul>
   {% for n in notes %}
-  <li><b>{{ n.title }}</b> — {{ n.body }}</li>
+  <li>
+    <b>{{ n.title }}</b> — {{ n.body }}
+    <form method="post" action="/notes/{{ n.id }}/delete" style="display:inline">
+      <button>Delete</button>
+    </form>
+  </li>
   {% else %}
   <li><i>No notes yet.</i></li>
   {% endfor %}
@@ -452,6 +465,83 @@ curl -sS localhost:18500/notes | grep -E "Notes \(|No notes"
 Worth an assertion, because an empty-state branch is exactly the kind of markup that gets broken by
 a template edit and never noticed — nothing in normal use renders it.
 
+## A delete button, without a line of JavaScript
+
+The JSON API has `DELETE /api/notes/{id}`. The view cannot use it: **HTML forms send `GET` or `POST`
+and nothing else.** There is no `method="delete"`.
+
+Three ways out, and the ladder stops at the first:
+
+| Approach | Cost |
+|---|---|
+| **A `POST` route the form can reach** | one route, no JavaScript, works with JS disabled |
+| `fetch('/api/notes/1', {method:'DELETE'})` | a script block, and a page that silently does nothing when JS fails |
+| A `_method=DELETE` hidden field + middleware | middleware to write and maintain, to emulate a verb the server already exposes |
+
+The middle option is what most tutorials reach for. It is more code than the route it avoids.
+
+```python
+@router.post("/notes/{note_id}/delete")
+def page_delete(note_id: int):
+    """Browsers cannot send DELETE from a form, so the view posts here instead."""
+    if not models.delete_note(note_id):
+        raise HTTPException(status_code=404, detail="note not found")
+    return RedirectResponse("/notes", status_code=303)
+```
+
+```html
+<form method="post" action="/notes/{{ n.id }}/delete" style="display:inline">
+  <button>Delete</button>
+</form>
+```
+
+**The controller grew; the model did not.** `page_delete` and `api_delete` both call the same
+`models.delete_note` — two transports, one rule, which is the same reason `Annotated[NoteIn, Form()]`
+was worth it earlier. The 404 behaviour matches the API's for free.
+
+`{{ n.id }}` in the `action` is not a string-building risk here — it is an integer from the database,
+and the route declares `note_id: int`, so a non-numeric id never reaches the handler:
+
+```bash
+curl -X POST localhost:18500/notes/abc/delete    # 422
+```
+
+### The check that lied
+
+Following the redirect the way a browser does needs care with `curl`:
+
+```bash
+curl -sS -L -X POST localhost:18500/notes/2/delete
+```
+
+That returns a `422` from `/notes`, which reads like the delete route is broken. It is not —
+**`-X POST` with `-L` forces `POST` onto the redirect target too**, so curl re-posted to `/notes`
+instead of fetching it. Traced with `-v`:
+
+```
+> POST /notes/2/delete      < 303 See Other
+> POST /notes               < 422 Unprocessable Content     ← -X POST forced the method
+```
+
+Dropping `-X` and letting `-d` imply the method gives the browser's actual behaviour:
+
+```
+> POST /notes/2/delete      < 303 See Other
+> GET  /notes               < 200 OK                        ← what a browser really does
+```
+
+```bash
+curl -sS -L -d '' localhost:18500/notes/2/delete | grep -E "Notes \(|<b>"
+```
+
+```
+<h1>Notes (1)</h1>
+    <b>first</b> — keep
+```
+
+The app was correct the whole time; the command checking it was not. Same shape as the piped-exit-code
+mistake in [[dbt-duckdb-local]] — **when a check fails, rule out the check before changing the code.**
+
 ## The checks that can fail
 
 ```python title="tests/test_notes.py (excerpt)"
@@ -469,7 +559,7 @@ def test_view_escapes_html():
 ```
 
 ```
-20 passed, 1 warning in 0.35s
+23 passed, 1 warning in 0.37s
 ```
 
 The escaping test is worth keeping even though Jinja2 autoescapes `.html` by default — **it is a
@@ -488,6 +578,9 @@ sending the payload through the real view:
 - [x] `DELETE` returns `204` with a **zero-byte** body, measured rather than assumed
 - [x] Deleting the same id twice gives `204` then `404` — the deliberate choice, pinned by a test
 - [x] Deleting the last note renders the view's `{% else %}` empty state
+- [x] The view renders one delete form per note, each posting to its own `/notes/{id}/delete`
+- [x] Submitting that form returns `303` and the row is gone from `GET /api/notes`
+- [x] `POST /notes/abc/delete` is `422` — the path param is typed, not a string
 - [x] `PUT` replaces every field — omitting `body` clears it rather than keeping the old value
 - [x] `PUT` rejects an empty title `422`, the same rule `POST` enforces, from the same model
 - [x] `PATCH` with a field omitted leaves that column alone — the same request `PUT` uses to clear it
@@ -497,7 +590,7 @@ sending the payload through the real view:
 - [x] An empty title is rejected `422` over **both** JSON and form encoding — the second one regressed once, see below
 - [x] A browser-style `POST /notes` (url-encoded, no JSON) returns `303` and the row persists
 - [x] `<script>` in a title comes back HTML-escaped from the view — **payload actually sent, not assumed**
-- [x] `pytest -q` reports `20 passed`
+- [x] `pytest -q` reports `23 passed`
 
 ## Rollback
 
