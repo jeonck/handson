@@ -4,17 +4,19 @@ date: 2026-08-21
 domain: install
 tags: [python, web, api, architecture]
 stack: [fastapi, python, jinja2, sqlite, pytest]
-summary: A notes CRUD split into model / view / controller in 175 lines, with sqlite3 from the standard library instead of an ORM. The layering earns its keep exactly once — the same Pydantic model validates a JSON body and an HTML form — and the browser form path was broken until a real form POST was tried, returning 500 where it owed a 422.
+summary: A notes CRUD split into model / view / controller in 175 lines, with sqlite3 from the standard library instead of an ORM. Clicked through in a real browser, which is the only way two of its guarantees — no duplicate on reload, and inert XSS payloads — can actually be observed. The layering earns its keep exactly once — the same Pydantic model validates a JSON body and an HTML form — and the browser form path was broken until a real form POST was tried, returning 500 where it owed a 422.
 source: handson
-env: FastAPI 0.141.1 · Jinja2 3.1.6 · python-multipart · pytest · sqlite3 (stdlib) · Python 3.13.0 on macOS 14.7.5
+env: FastAPI 0.141.1 · Jinja2 3.1.6 · python-multipart · pytest · sqlite3 (stdlib) · Python 3.13.0 on macOS 14.7.5. The HTML view was additionally driven in a real Chromium browser at 1280x720
 verified: 2026-08-21
 verifiability: lab
 duration: 30–45 min
 risk: low
 ---
 
-> **Verified 2026-08-21.** Every response body below came from `curl` against a running uvicorn, and
-> the 23-test suite passes. The 500 in [Where this bit us](#where-this-bit-us) is what the app
+> **Verified 2026-08-21.** Every response body below came from `curl` against a running uvicorn, the
+> 23-test suite passes, and the HTML view was clicked through in a real browser — see
+> [What only a browser could confirm](#what-only-a-browser-could-confirm) for the two guarantees
+> neither curl nor `TestClient` can check. The 500 in [Where this bit us](#where-this-bit-us) is what the app
 > actually returned before it was fixed.
 
 **FastAPI is not an MVC framework, and pretending otherwise is how these projects bloat.** There is
@@ -542,6 +544,57 @@ curl -sS -L -d '' localhost:18500/notes/2/delete | grep -E "Notes \(|<b>"
 The app was correct the whole time; the command checking it was not. Same shape as the piped-exit-code
 mistake in [[dbt-duckdb-local]] — **when a check fails, rule out the check before changing the code.**
 
+## What only a browser could confirm
+
+`curl` and `TestClient` cover the wire. Two of this app's guarantees are about what a *browser* does
+with the response, and neither is observable from either tool. Both were checked by driving a real
+browser against `http://127.0.0.1:18500/notes`.
+
+### Post/redirect/get, proven by reloading
+
+The `303` in `page_create` exists so a reload does not re-submit. Testing that means actually
+reloading after a form submit:
+
+```js
+// after clicking Add, in the browser console
+location.reload()
+document.querySelector('h1').textContent                              // "Notes (3)"
+performance.getEntriesByType('navigation')[0].type                    // "reload"
+```
+
+**Still three notes after a reload, not four.** The navigation type confirms it was a genuine reload
+rather than a fresh navigation, and no "Confirm Form Resubmission" prompt appeared. With `307` — the
+`RedirectResponse` default — the browser would have re-issued the POST and created a duplicate. That
+is the failure the status code prevents, and **no `curl` invocation demonstrates it**, because curl
+has no back/forward cache and no resubmission behaviour to exercise.
+
+### Escaping, proven by outcome instead of appearance
+
+Earlier, `curl` showed `&lt;script&gt;alert(1)&lt;/script&gt;` in the response bytes. That is the
+right *appearance*, but it does not prove the browser built no element. Inserting two payloads —
+one needing a script tag, one not:
+
+```bash
+curl -sS -d 'title=<script>alert(1)</script>&body=<img src=x onerror=alert(2)>' \
+  http://127.0.0.1:18500/notes
+```
+
+```js
+document.querySelectorAll('li script').length   // 0
+document.querySelectorAll('li img').length      // 0
+[...document.querySelectorAll('li')].pop().textContent.trim()
+// "<script>alert(1)</script> — <img src=x onerror=alert(2)>"
+```
+
+**Zero elements constructed, both payloads sitting in the DOM as text**, and the console clean.
+`<img src=x onerror=...>` is the more useful half of that test: it fires without a `<script>` tag at
+all, so a page that only ever tried `<script>` would look safe while being vulnerable to the
+attribute form.
+
+Clicking a **Delete** button took the list from `Notes (3)` to `Notes (2)` with the row gone and the
+URL back at `/notes` — the same flow the [check that lied](#the-check-that-lied) made curl fumble,
+working exactly as intended once a real browser did the redirecting.
+
 ## The checks that can fail
 
 ```python title="tests/test_notes.py (excerpt)"
@@ -581,6 +634,9 @@ sending the payload through the real view:
 - [x] The view renders one delete form per note, each posting to its own `/notes/{id}/delete`
 - [x] Submitting that form returns `303` and the row is gone from `GET /api/notes`
 - [x] `POST /notes/abc/delete` is `422` — the path param is typed, not a string
+- [x] In a real browser, clicking **Delete** removes the row and lands back on `/notes`
+- [x] Reloading after a form submit leaves the count unchanged — post/redirect/get, **not** demonstrable with curl
+- [x] `<script>` and `<img onerror=…>` payloads construct **zero** elements in the DOM, console clean
 - [x] `PUT` replaces every field — omitting `body` clears it rather than keeping the old value
 - [x] `PUT` rejects an empty title `422`, the same rule `POST` enforces, from the same model
 - [x] `PATCH` with a field omitted leaves that column alone — the same request `PUT` uses to clear it
