@@ -14,7 +14,7 @@ risk: low
 ---
 
 > **Verified 2026-08-21.** Every response body below came from `curl` against a running uvicorn, and
-> the 17-test suite passes. The 500 in [Where this bit us](#where-this-bit-us) is what the app
+> the 20-test suite passes. The 500 in [Where this bit us](#where-this-bit-us) is what the app
 > actually returned before it was fixed.
 
 **FastAPI is not an MVC framework, and pretending otherwise is how these projects bloat.** There is
@@ -392,6 +392,66 @@ with `extra="allow"`, or someone swapping the Pydantic model for a plain `dict` 
 becomes an injection point.** That is the condition under which this code stops being safe, and it is
 the reason `test_patch_ignores_undeclared_fields` exists rather than being left to inspection.
 
+## DELETE — a 204 that says nothing, and the second one that says 404
+
+`DELETE` was in the controller from the first version; it gets a section here because two of its
+choices are decisions, not defaults, and both are the kind a later reader might "correct".
+
+```bash
+curl -sS -i -X DELETE localhost:18500/api/notes/1
+```
+
+```
+HTTP/1.1 204 No Content
+content-type: application/json
+```
+
+The body is **zero bytes** — verified with `-w '%{size_download}'`, not eyeballed. `status_code=204`
+in the decorator plus a handler that returns `None` is what produces that; a handler that returned
+the deleted row with `204` would be sending a body the status code promises is absent, which is the
+usual way this endpoint gets written wrong.
+
+> **Expected output that looks wrong:** the `204` still carries `content-type: application/json`,
+> which a `No Content` response has no use for. It is harmless — there is no `content-length` and no
+> body — but it will catch the eye of anyone reading headers closely. It comes from the framework
+> defaulting the route's media type, not from anything in this handler.
+
+**Deleting the same id twice returns `204` then `404`, and that is deliberate:**
+
+```bash
+curl -X DELETE localhost:18500/api/notes/2   # 204
+curl -X DELETE localhost:18500/api/notes/2   # 404
+```
+
+`DELETE` is required to be *idempotent* — repeating it must not cause further change — and this
+satisfies that: the row is gone after the first call and stays gone. **Idempotent constrains the
+effect, not the status code.** Returning `204` the second time is also legal, and some APIs choose it
+so clients can retry blindly. This one reports `404` because the model already distinguishes the two
+cases for free:
+
+```python
+return conn.execute("DELETE FROM notes WHERE id = ?", (note_id,)).rowcount > 0
+```
+
+`rowcount` is `0` when nothing matched, so the controller gets the answer without an existence
+`SELECT` first — the same trick `update_note` uses. Discarding that information to return `204`
+regardless would be extra code that tells the client less. `test_deleting_twice_is_404_not_204`
+pins the choice so it is a decision on the record rather than an accident.
+
+Deleting the last note is also the only path that reaches the view's `{% else %}` branch:
+
+```bash
+curl -sS localhost:18500/notes | grep -E "Notes \(|No notes"
+```
+
+```
+<h1>Notes (0)</h1>
+  <li><i>No notes yet.</i></li>
+```
+
+Worth an assertion, because an empty-state branch is exactly the kind of markup that gets broken by
+a template edit and never noticed — nothing in normal use renders it.
+
 ## The checks that can fail
 
 ```python title="tests/test_notes.py (excerpt)"
@@ -409,7 +469,7 @@ def test_view_escapes_html():
 ```
 
 ```
-17 passed, 1 warning in 0.33s
+20 passed, 1 warning in 0.35s
 ```
 
 The escaping test is worth keeping even though Jinja2 autoescapes `.html` by default — **it is a
@@ -425,6 +485,9 @@ sending the payload through the real view:
 - [x] `POST /api/notes` returns `201` and the assigned `id`
 - [x] `GET /notes` renders the same rows as `GET /api/notes`
 - [x] `GET /api/notes/999` returns `404`, and so does `DELETE` and `PUT` on a missing id
+- [x] `DELETE` returns `204` with a **zero-byte** body, measured rather than assumed
+- [x] Deleting the same id twice gives `204` then `404` — the deliberate choice, pinned by a test
+- [x] Deleting the last note renders the view's `{% else %}` empty state
 - [x] `PUT` replaces every field — omitting `body` clears it rather than keeping the old value
 - [x] `PUT` rejects an empty title `422`, the same rule `POST` enforces, from the same model
 - [x] `PATCH` with a field omitted leaves that column alone — the same request `PUT` uses to clear it
@@ -434,7 +497,7 @@ sending the payload through the real view:
 - [x] An empty title is rejected `422` over **both** JSON and form encoding — the second one regressed once, see below
 - [x] A browser-style `POST /notes` (url-encoded, no JSON) returns `303` and the row persists
 - [x] `<script>` in a title comes back HTML-escaped from the view — **payload actually sent, not assumed**
-- [x] `pytest -q` reports `17 passed`
+- [x] `pytest -q` reports `20 passed`
 
 ## Rollback
 
