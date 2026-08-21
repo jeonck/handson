@@ -4,7 +4,7 @@ date: 2026-08-21
 domain: install
 tags: [python, web, api, architecture]
 stack: [fastapi, python, jinja2, sqlite, pytest]
-summary: A notes CRUD split into model / view / controller in 175 lines, with sqlite3 from the standard library instead of an ORM. Clicked through in a real browser, which is the only way two of its guarantees — no duplicate on reload, and inert XSS payloads — can actually be observed. The layering earns its keep exactly once — the same Pydantic model validates a JSON body and an HTML form — and the browser form path was broken until a real form POST was tried, returning 500 where it owed a 422.
+summary: A notes CRUD split into model / view / controller in 205 lines, with sqlite3 from the standard library instead of an ORM. Clicked through in a real browser, which is the only way two of its guarantees — no duplicate on reload, and inert XSS payloads — can actually be observed. The layering earns its keep exactly once — the same Pydantic model validates a JSON body and an HTML form — and the browser form path was broken until a real form POST was tried, returning 500 where it owed a 422.
 source: handson
 env: FastAPI 0.141.1 · Jinja2 3.1.6 · python-multipart · pytest · sqlite3 (stdlib) · Python 3.13.0 on macOS 14.7.5. The HTML view was additionally driven in a real Chromium browser at 1280x720
 verified: 2026-08-21
@@ -14,7 +14,7 @@ risk: low
 ---
 
 > **Verified 2026-08-21.** Every response body below came from `curl` against a running uvicorn, the
-> 23-test suite passes, and the HTML view was clicked through in a real browser — see
+> 29-test suite passes, and the HTML view was clicked through in a real browser — see
 > [What only a browser could confirm](#what-only-a-browser-could-confirm) for the two guarantees
 > neither curl nor `TestClient` can check. The 500 in [Where this bit us](#where-this-bit-us) is what the app
 > actually returned before it was fixed.
@@ -212,6 +212,14 @@ def page_create(data: Annotated[models.NoteIn, Form()]):
     return RedirectResponse("/notes", status_code=303)
 
 
+@router.post("/notes/{note_id}/edit")
+def page_edit(note_id: int, data: Annotated[models.NoteIn, Form()]):
+    """A form always sends every field, so this is a replace — update_note, not patch_note."""
+    if models.update_note(note_id, data) is None:
+        raise HTTPException(status_code=404, detail="note not found")
+    return RedirectResponse("/notes", status_code=303)
+
+
 @router.post("/notes/{note_id}/delete")
 def page_delete(note_id: int):
     """Browsers cannot send DELETE from a form, so the view posts here instead."""
@@ -243,7 +251,11 @@ into a follow-up GET, which is the whole point of post/redirect/get.
 <ul>
   {% for n in notes %}
   <li>
-    <b>{{ n.title }}</b> — {{ n.body }}
+    <form method="post" action="/notes/{{ n.id }}/edit" style="display:inline">
+      <input name="title" value="{{ n.title }}" required>
+      <input name="body" value="{{ n.body }}">
+      <button>Save</button>
+    </form>
     <form method="post" action="/notes/{{ n.id }}/delete" style="display:inline">
       <button>Delete</button>
     </form>
@@ -591,6 +603,75 @@ document.querySelectorAll('li img').length      // 0
 all, so a page that only ever tried `<script>` would look safe while being vulnerable to the
 attribute form.
 
+### An edit form — which is a replace, and looks like one
+
+The follow-up asked for an edit UI. It is one route and four lines of template, and it maps to
+**`update_note`, not `patch_note`**: a form always submits every field it contains, so what arrives
+is a complete representation. That is `PUT` semantics, and reusing the `PUT` model function is both
+lazier and more honest than routing a full payload through the partial-update path.
+
+```python
+@router.post("/notes/{note_id}/edit")
+def page_edit(note_id: int, data: Annotated[models.NoteIn, Form()]):
+    """A form always sends every field, so this is a replace — update_note, not patch_note."""
+    if models.update_note(note_id, data) is None:
+        raise HTTPException(status_code=404, detail="note not found")
+    return RedirectResponse("/notes", status_code=303)
+```
+
+```html
+<form method="post" action="/notes/{{ n.id }}/edit" style="display:inline">
+  <input name="title" value="{{ n.title }}" required>
+  <input name="body" value="{{ n.body }}">
+  <button>Save</button>
+</form>
+```
+
+Inline on the list rows, so there is no second template and no `GET /notes/{id}/edit` to render one.
+
+Editing a title in the browser and clicking **Save** kept the body — but **not because the endpoint
+is partial.** The form resubmitted the body unchanged. Clearing the body field and saving proves
+which it is:
+
+```js
+f.querySelector('input[name=body]').value = '';   // user clears the field
+f.querySelector('button').click();
+// after the redirect:
+[...document.querySelectorAll('li input')].map(i => i.value)
+// ["edited in the browser", "", …]     ← body cleared, as a replace should
+```
+
+**What is on screen is what gets stored.** A user who empties a field expects it emptied, which is
+exactly what `PUT` semantics deliver and what `PATCH` would not — the field's absence from a partial
+update would leave the old value in place, contradicting the form the user just submitted.
+
+`required` on the title input means the browser blocks submission before any request is sent:
+
+```js
+f.checkValidity()                              // false
+t.validationMessage                            // "Please fill out this field."
+```
+
+That is a convenience, not the guard — `min_length=1` on `NoteIn` still returns `422` to anything
+that skips the browser, which `test_edit_form_validates_like_the_api` pins.
+
+#### The `value="{{ … }}"` attribute is the new escaping surface
+
+Rendering user text inside an attribute is a different context from rendering it between tags. A
+title of `evil" onfocus=alert(1) x="` is a deliberate attempt to close the quote and inject an event
+handler. Asked of the browser's own parser:
+
+```js
+const ins = [...document.querySelectorAll('li input')];
+ins.some(i => i.hasAttribute('onfocus'))                          // false
+[...new Set(ins.flatMap(i => [...i.attributes].map(a => a.name)))] // ["name","value","required"]
+ins.map(i => i.value)                                             // includes: 'evil" onfocus=alert(1) x="'
+```
+
+Jinja escapes `"` to `&#34;`, so the payload stays *inside* the value. **Three attributes exist and
+`onfocus` is not among them** — the check is the attribute list, not a substring search, for the
+reason in [Where this bit us](#where-this-bit-us).
+
 ### PATCH, which no form on the page can reach
 
 `DELETE` got a button because a `POST` route could stand in for it. `PATCH` has no such workaround
@@ -667,7 +748,7 @@ def test_view_escapes_html():
 ```
 
 ```
-23 passed, 1 warning in 0.37s
+29 passed, 1 warning in 0.49s
 ```
 
 The escaping test is worth keeping even though Jinja2 autoescapes `.html` by default — **it is a
@@ -695,6 +776,9 @@ sending the payload through the real view:
 - [x] `form.method = 'patch'` coerces to `"get"` in the DOM — the constraint confirmed, not quoted
 - [x] `fetch(..., {method:'PATCH'})` reproduces all six curl cases from a browser, including `422` and `404`
 - [x] Patches made against the JSON API show up in the HTML view after a reload
+- [x] Editing a title in the browser and saving keeps the body — because the form resubmits it
+- [x] Clearing the body field and saving **clears** it, confirming replace rather than partial semantics
+- [x] A quote in a title creates no `onfocus` attribute — asserted against the parsed attribute list, not a substring
 - [x] `PUT` replaces every field — omitting `body` clears it rather than keeping the old value
 - [x] `PUT` rejects an empty title `422`, the same rule `POST` enforces, from the same model
 - [x] `PATCH` with a field omitted leaves that column alone — the same request `PUT` uses to clear it
@@ -704,7 +788,7 @@ sending the payload through the real view:
 - [x] An empty title is rejected `422` over **both** JSON and form encoding — the second one regressed once, see below
 - [x] A browser-style `POST /notes` (url-encoded, no JSON) returns `303` and the row persists
 - [x] `<script>` in a title comes back HTML-escaped from the view — **payload actually sent, not assumed**
-- [x] `pytest -q` reports `23 passed`
+- [x] `pytest -q` reports `29 passed`
 
 ## Rollback
 
@@ -746,6 +830,33 @@ the body is parsed as a form, and validation moves back where FastAPI can turn a
 a controller whose form endpoint could not accept a form. The `data={...}` tests exist now because of
 this, not in anticipation of it.
 
+**A substring search is the wrong way to assert escaping, and it fails the safe case.** The first
+attribute-escaping test read:
+
+```python
+assert "onfocus=alert(1)" not in body      # wrong
+```
+
+It failed against correctly-escaped output. Jinja had turned `"` into `&#34;`, so the payload sat
+harmlessly inside `value="evil&#34; onfocus=alert(1) x=&#34;"` — the substring is *present and
+inert*. The assertion was checking for the appearance of the payload rather than for the property
+that matters, so it would also have passed on a page that escaped nothing but spelled the handler
+differently.
+
+The replacement parses the HTML with `html.parser` from the standard library and asserts the real
+thing — that no `onfocus` **attribute** exists on any input, while the payload survives intact as a
+`value`:
+
+```python
+inputs = _parse_inputs(client.get("/notes").text)
+assert any(a.get("value") == 'evil" onfocus=alert(1) x="' for a in inputs)
+assert not any("onfocus" in a for a in inputs)
+```
+
+Same failure shape as the `curl -L -X POST` trap above and the piped exit code in
+[[dbt-duckdb-local]]: **the code was right and the check was wrong.** Escaping tests are especially
+prone to it, because the correct output contains the attack string by design.
+
 ## What was deliberately left out
 
 MVC discussions attract layers. These were skipped on purpose, with the condition that would bring
@@ -765,7 +876,7 @@ column is actually true.
 
 ## Follow-ups
 
-- [ ] Add an edit form to the view — a `POST /notes/{id}/edit` route standing in for `PATCH`, the same way `POST /notes/{id}/delete` stands in for `DELETE`; today nothing clickable reaches `PATCH`
+- [x] Add an edit form to the view — done as `POST /notes/{id}/edit`, mapping to `update_note` (replace) rather than `patch_note`; see [An edit form — which is a replace, and looks like one](#an-edit-form--which-is-a-replace-and-looks-like-one)
 - [x] Add `PUT /api/notes/{id}` — done, and it needed **no** new schema; see [PUT replaces, it does not patch](#put-replaces-it-does-not-patch). A `NoteUpdate` with optional fields is what `PATCH` would need, not `PUT`
 - [x] Add `PATCH /api/notes/{id}` — done; `NoteUpdate` and `exclude_unset=True` earned their place exactly as predicted, see [PATCH is where the second schema earns its place](#patch-is-where-the-second-schema-earns-its-place)
 - [ ] Swap `sqlite3` for the CloudNativePG instance in [[postgresql-cnpg-onprem]] and confirm only `models.py` changes — the claim this layering makes, currently untested
