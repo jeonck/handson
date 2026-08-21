@@ -248,3 +248,4 @@ time. Save the script to a file, or pass `load_dotenv("/explicit/path/.env")`.
 [[fastapi-mvc-layering]] — the other small Python app in this repo, and where `.env`-style config would go if it grew one.
 [[gitlab-ci-argocd-fastapi-procedure]] — the pipeline that would deploy this, and how a secret gets into a cluster without landing in Git.
 [[bruno-api-client]] — for exercising an LLM endpoint directly, outside the app that wraps it.
+[[pydantic-ai-structured-output]] — the same Gemini key one layer up: the reply comes back as a validated Pydantic model instead of a string.
