@@ -194,7 +194,7 @@ looked fine because it was measuring the wrong thing.
 - [ ] Point `profiles.yml` at the CloudNativePG instance from [[postgresql-cnpg-onprem]] and confirm the identical project files run unchanged against a real warehouse
 - [ ] Add an incremental model and a snapshot — neither is exercised here, and both are where dbt's state handling actually gets hard
 - [ ] Run `dbt build` as a stage in [[gitlab-ci-argocd-fastapi-procedure]]'s pipeline, which already has the JUnit-report pattern from [[bruno-api-client]] to copy
-- [ ] Orchestrate this from [[dagster-local-quickstart]] with `dagster-dbt`, so the dbt DAG and the asset graph are one lineage instead of two
+- [x] Orchestrate this from [[dagster-local-quickstart]] with `dagster-dbt`, so the dbt DAG and the asset graph are one lineage instead of two — done in [[dagster-dbt-integration]]
 
 ## Related
 
@@ -202,3 +202,4 @@ looked fine because it was measuring the wrong thing.
 [[trino-query-engine-onprem]] — the query engine a warehouse-backed version of this would target instead of a local DuckDB file.
 [[postgresql-cnpg-onprem]] — the on-prem database this project could point at by editing `profiles.yml` alone.
 [[bruno-api-client]] — the same lesson about a check that measures the wrong thing and passes anyway.
+[[dagster-dbt-integration]] — this project wired into Dagster, where each model becomes an asset and a failing test keeps the mart out of the catalog.
