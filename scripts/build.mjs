@@ -435,6 +435,14 @@ if (existsSync(DIST)) await rm(DIST, { recursive: true });
 await mkdir(path.join(DIST, "data", "notes"), { recursive: true });
 await cp(path.join(ROOT, "site"), DIST, { recursive: true });
 
+// Image assets live in <folder>/img/ next to the documents that use them. The
+// walker above only collects .md, so without this they never reach dist/ and
+// every screenshot 404s on the published site.
+for (const folder of VAULT_DIRS) {
+  const src = path.join(ROOT, folder, "img");
+  if (existsSync(src)) await cp(src, path.join(DIST, folder, "img"), { recursive: true });
+}
+
 const index = {
   generatedAt: new Date().toISOString(),
   config: {

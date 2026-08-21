@@ -562,6 +562,31 @@ mistake in [[dbt-duckdb-local]] — **when a check fails, rule out the check bef
 with the response, and neither is observable from either tool. Both were checked by driving a real
 browser against `http://127.0.0.1:18500/notes`.
 
+### What the page actually looks like
+
+Three notes, each row carrying its own prefilled edit form plus **Save** and **Delete** — no CSS,
+because none of the claims in this document are about styling.
+
+![The notes list: three rows, each with prefilled title and body inputs, a Save button and a Delete button](/01-install/img/notes-list.png)
+
+Filling the top form and clicking **Add** — four rows, and the top inputs cleared, because the
+browser fetched a fresh page rather than redisplaying the submitted one:
+
+![After Add: four rows, the new note at the bottom, the top form empty again](/01-install/img/notes-after-add.png)
+
+Editing the third row's title in place and clicking **Save** — the title changes, the body is
+untouched, the count stays at four:
+
+![After Save: the third row now reads "edited via Save" with its body unchanged](/01-install/img/notes-after-edit.png)
+
+Clicking **Delete** on that same row — back to three, with the other rows exactly as they were:
+
+![After Delete: three rows, the edited row gone, the remaining rows unchanged](/01-install/img/notes-after-delete.png)
+
+These four were captured with Playwright driving the same Chrome used for the interactive checks
+below, at a 2× device scale factor, clipped to the content height. They are the app as it renders,
+not a mockup.
+
 ### Post/redirect/get, proven by reloading
 
 The `303` in `page_create` exists so a reload does not re-submit. Testing that means actually

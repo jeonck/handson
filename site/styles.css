@@ -399,6 +399,7 @@ code { font-family: var(--mono); font-size: .89em; background: var(--bg-sunk); p
 
 .prose { font-size: 15px; line-height: 1.78; }
 .prose > :first-child { margin-top: 0; }
+.prose img { max-width: 100%; height: auto; display: block; margin: 14px 0; border: 1px solid var(--line); border-radius: 4px; }
 .prose h2 { font-size: 18px; margin: 34px 0 10px; letter-spacing: -.015em; padding-bottom: 6px; border-bottom: 1px solid var(--line); }
 .prose h3 { font-size: 15.5px; margin: 26px 0 8px; }
 .prose h4 { font-size: 14px; margin: 20px 0 6px; color: var(--ink-2); }
