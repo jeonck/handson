@@ -544,3 +544,4 @@ API's `/api/v4/version`, before concluding a service is down.
 [[pod-crashloopbackoff]] — when the new image starts and immediately dies, and why liveness must not check a database.
 [[onprem-3node-kubeadm-ubuntu]] — the cluster underneath, running containerd rather than Docker.
 [[argo-rollouts-canary-kind]] — replacing this document's plain `Deployment` with a canary `Rollout` would give section 7's deploy check an actual progression window to verify during, instead of an instant cutover.
+[[fastapi-mvc-layering]] — the same framework with the application split into model/view/controller, where this document's `hello-api` is deliberately one file.
