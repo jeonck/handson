@@ -591,6 +591,61 @@ document.querySelectorAll('li img').length      // 0
 all, so a page that only ever tried `<script>` would look safe while being vulnerable to the
 attribute form.
 
+### PATCH, which no form on the page can reach
+
+`DELETE` got a button because a `POST` route could stand in for it. `PATCH` has no such workaround
+at the form layer, and the DOM says so outright:
+
+```js
+const f = document.createElement('form'); f.method = 'patch';
+f.method                                   // "get"
+[...document.forms].map(x => x.method)     // ["post", "post", "post"]
+```
+
+**Assigning `method="patch"` silently yields `"get"`** — the browser does not reject it, it coerces
+it. That is worth seeing once, because a template with `method="patch"` renders fine, submits as a
+`GET`, and looks like a routing bug rather than an HTML constraint.
+
+So a browser reaches `PATCH` only through `fetch`, which is exactly how a real front end would:
+
+```js
+const p = (id, body) => fetch(`/api/notes/${id}`, {
+  method: 'PATCH',
+  headers: {'content-type': 'application/json'},
+  body: JSON.stringify(body),
+}).then(async r => ({s: r.status, b: await r.json().catch(() => null)}));
+```
+
+The `exclude_unset` distinction, re-confirmed from a browser rather than curl:
+
+| Call | Status | Result |
+|---|---|---|
+| `p(1, {title: 'patched title only'})` | `200` | `body` still `"keep this body"` — untouched |
+| `p(2, {body: ''})` | `200` | `body` now `""` — explicitly cleared |
+| `p(1, {})` | `200` | unchanged, no `UPDATE` issued |
+| `p(1, {title: ''})` | `422` | `string_too_short` |
+| `p(999, {title: 'ghost'})` | `404` | `note not found` |
+| `p(2, {id: 99, bogus: 'x', title: 'renamed'})` | `200` | `id` stayed `2`, `bogus` dropped |
+
+> **Expected output that reads wrong.** The `422` and the `404` above each log a red
+> `Failed to load resource` line in the browser console. Those are the two deliberate failure cases
+> answering correctly — `fetch` does not throw on a 4xx, it resolves, and the console notes the
+> status regardless. A clean console here would mean those two calls never ran.
+
+Reloading `/notes` afterwards shows both patches through the **view**, which is the MVC claim worth
+closing on: mutations made against the JSON API appear in the HTML page because both go through the
+same `models.py`.
+
+```
+Notes (2)
+  patched title only — keep this body     ← body survived a title-only PATCH
+  renamed —                                ← body cleared, id and bogus ignored
+```
+
+**There is no edit form in the view**, so nothing a user can click reaches `PATCH` — only script does.
+Adding one is in [Follow-ups](#follow-ups); it needs a `POST /notes/{id}/edit` route for the same
+reason `DELETE` needed one.
+
 Clicking a **Delete** button took the list from `Notes (3)` to `Notes (2)` with the row gone and the
 URL back at `/notes` — the same flow the [check that lied](#the-check-that-lied) made curl fumble,
 working exactly as intended once a real browser did the redirecting.
@@ -637,6 +692,9 @@ sending the payload through the real view:
 - [x] In a real browser, clicking **Delete** removes the row and lands back on `/notes`
 - [x] Reloading after a form submit leaves the count unchanged — post/redirect/get, **not** demonstrable with curl
 - [x] `<script>` and `<img onerror=…>` payloads construct **zero** elements in the DOM, console clean
+- [x] `form.method = 'patch'` coerces to `"get"` in the DOM — the constraint confirmed, not quoted
+- [x] `fetch(..., {method:'PATCH'})` reproduces all six curl cases from a browser, including `422` and `404`
+- [x] Patches made against the JSON API show up in the HTML view after a reload
 - [x] `PUT` replaces every field — omitting `body` clears it rather than keeping the old value
 - [x] `PUT` rejects an empty title `422`, the same rule `POST` enforces, from the same model
 - [x] `PATCH` with a field omitted leaves that column alone — the same request `PUT` uses to clear it
@@ -707,6 +765,7 @@ column is actually true.
 
 ## Follow-ups
 
+- [ ] Add an edit form to the view — a `POST /notes/{id}/edit` route standing in for `PATCH`, the same way `POST /notes/{id}/delete` stands in for `DELETE`; today nothing clickable reaches `PATCH`
 - [x] Add `PUT /api/notes/{id}` — done, and it needed **no** new schema; see [PUT replaces, it does not patch](#put-replaces-it-does-not-patch). A `NoteUpdate` with optional fields is what `PATCH` would need, not `PUT`
 - [x] Add `PATCH /api/notes/{id}` — done; `NoteUpdate` and `exclude_unset=True` earned their place exactly as predicted, see [PATCH is where the second schema earns its place](#patch-is-where-the-second-schema-earns-its-place)
 - [ ] Swap `sqlite3` for the CloudNativePG instance in [[postgresql-cnpg-onprem]] and confirm only `models.py` changes — the claim this layering makes, currently untested
