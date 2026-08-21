@@ -567,21 +567,21 @@ browser against `http://127.0.0.1:18500/notes`.
 Three notes, each row carrying its own prefilled edit form plus **Save** and **Delete** — no CSS,
 because none of the claims in this document are about styling.
 
-![The notes list: three rows, each with prefilled title and body inputs, a Save button and a Delete button](/01-install/img/notes-list.png)
+<img src="/01-install/img/notes-list.png" width="620" alt="The notes list: three rows, each with prefilled title and body inputs, a Save button and a Delete button">
 
 Filling the top form and clicking **Add** — four rows, and the top inputs cleared, because the
 browser fetched a fresh page rather than redisplaying the submitted one:
 
-![After Add: four rows, the new note at the bottom, the top form empty again](/01-install/img/notes-after-add.png)
+<img src="/01-install/img/notes-after-add.png" width="620" alt="After Add: four rows, the new note at the bottom, the top form empty again">
 
 Editing the third row's title in place and clicking **Save** — the title changes, the body is
 untouched, the count stays at four:
 
-![After Save: the third row now reads "edited via Save" with its body unchanged](/01-install/img/notes-after-edit.png)
+<img src="/01-install/img/notes-after-edit.png" width="620" alt="After Save: the third row now reads &quot;edited via Save&quot; with its body unchanged">
 
 Clicking **Delete** on that same row — back to three, with the other rows exactly as they were:
 
-![After Delete: three rows, the edited row gone, the remaining rows unchanged](/01-install/img/notes-after-delete.png)
+<img src="/01-install/img/notes-after-delete.png" width="620" alt="After Delete: three rows, the edited row gone, the remaining rows unchanged">
 
 These four were captured with Playwright driving the same Chrome used for the interactive checks
 below, at a 2× device scale factor, clipped to the content height. They are the app as it renders,
