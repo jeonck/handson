@@ -319,3 +319,4 @@ pkill -f "dagster dev"
 [[airflow-orchestration-onprem]] — the other orchestrator documented in this repo, targeting the on-prem Kubernetes cluster rather than a local venv; drafted but not yet run, unlike this document.
 [[bruno-api-client]] — the same "verify a local service via CLI/curl, not a browser" approach applied to `hello-api` instead of Dagster's webserver.
 [[gitlab-ci-argocd-fastapi-onprem]] — a `dagster definitions validate` step would fit the same place in a CI pipeline that this document's [[gitlab-ci-argocd-fastapi-procedure]] gives to `pytest` and `ruff`.
+[[dbt-duckdb-local]] — the same orders dataset and the same bad row, expressed as SQL models with tests instead of assets; `dagster-dbt` merges the two graphs into one lineage.
