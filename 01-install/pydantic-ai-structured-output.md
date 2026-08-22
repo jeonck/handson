@@ -9,7 +9,7 @@ source: handson
 env: pydantic-ai 2.33.0 · pydantic 2.13.4 · google-genai 2.19.0 · python-dotenv 1.2.3 · Python 3.13.0 on macOS 14.7.5 · Gemini via GEMINI_API_KEY
 verified: 2026-08-21
 verifiability: partial
-verifiability-note: Verified against Gemini only, the one provider with a key on this machine — the model-string form for other providers is unexercised. Validator-driven retries and retry exhaustion were both observed live. A retry triggered by Pydantic schema validation itself was never reproduced: the model satisfied every constraint tried, in one case by degrading the answer. Tools, dependencies, streaming and multi-agent graphs are untouched.
+verifiability-note: Verified against Gemini only, the one provider with a key on this machine — the model-string form for other providers is unexercised. Validator-driven retries and retry exhaustion were both observed live, as were the notebook's run_sync failure and its top-level-await fix. The shipped notebook has NOT been run top to bottom in one pass and ships with empty output cells: the Gemini free-tier quota ran out during verification. A retry triggered by Pydantic schema validation itself was never reproduced either. Tools, dependencies, streaming and multi-agent graphs are untouched.
 duration: 25–35 min
 risk: low
 ---
@@ -202,6 +202,70 @@ And the failure is an exception, not a `None` or a partially-filled model: `Unex
 is what a caller must be ready to catch, because a validator this application cannot satisfy is
 indistinguishable at runtime from a model having a bad day.
 
+## In a notebook: `run_sync()` is the one thing that breaks
+
+The script above runs unchanged in a `.py` file. Pasted into a Jupyter cell, its very first call
+fails:
+
+```python
+agent.run_sync("Select all users.")
+```
+
+```
+RuntimeError: This event loop is already running
+```
+
+**`run_sync` is a convenience wrapper that starts an event loop**, and a notebook kernel is already
+running one. Nothing is wrong with the agent, the key, or the model — the synchronous entry point
+simply cannot be used from inside a running loop.
+
+The fix is to use the coroutine `run_sync` was wrapping, with IPython's top-level `await`:
+
+```python
+result = await agent.run("Find the top 5 users by total spend in 2026")
+print(result.output.sql_query)
+```
+
+```sql
+SELECT table_name, column_name, data_type
+FROM information_schema.columns
+WHERE table_schema = 'public'
+ORDER BY table_name, ordinal_position;
+```
+
+**That is not the query that was asked for, and it is the real output.** With no schema and no tool,
+the model answered a question about users and spend with a query that inspects
+`information_schema` — it went looking for the tables first. Typed output guarantees the shape of
+the reply, and this is the same lesson as `SELECT 1` below, arriving from the other direction: a
+perfectly-formed `DatabaseQuery` can still contain the wrong query. The notebook shipped below adds
+an `instructions=` line naming the tables, which is the cheapest fix.
+
+Ending a cell with the result renders the model itself, which is a better argument for typed output
+than any prose — the notebook prints a `DatabaseQuery`, not a blob of text to be parsed:
+
+```python
+result.output
+```
+
+```
+DatabaseQuery(sql_query="SELECT table_name, column_name, data_type \nFROM information_schema.columns
+              \nWHERE table_schema = 'public' \nORDER BY table_name, ordinal_position;",
+              explanation='I will inspect the database schema first to formulate the SQL query.')
+```
+
+The `explanation` field is the model saying out loud that it is stalling for a schema — which a
+string return value would have buried in prose, and a typed field puts in its own slot.
+
+**The runnable notebook is [`pydantic-ai-gemini.ipynb`](/01-install/nb/pydantic-ai-gemini.ipynb)** —
+same agent, the failing `run_sync` cell kept in deliberately so the error is met once on purpose
+rather than in the middle of real work, plus an `instructions=` line so the model answers the
+question instead of asking for the schema. It needs a `.env` beside it.
+
+> ⚠️ **The notebook ships with empty output cells.** Its individual behaviours were verified in a
+> real kernel — the two blocks above are that kernel's output — but the notebook as a single
+> top-to-bottom run was not completed: the Gemini free tier ran out first. See
+> [Where this bit us](#where-this-bit-us) for what that limit actually is.
+
 ## Verification checklist
 
 - [x] `git check-ignore -v .env` names the ignoring rule, before anything is committed
@@ -211,6 +275,9 @@ indistinguishable at runtime from a model having a bad day.
 - [x] An unsatisfiable validator raises `UnexpectedModelBehavior: Exceeded maximum output retries`
 - [x] `retries=1` costs two requests, confirming the parameter is retries and not attempts
 - [ ] A retry driven by Pydantic schema validation alone — **never reproduced**, see below
+- [x] `run_sync()` in a Jupyter kernel raises `RuntimeError: This event loop is already running`
+- [x] `await agent.run(...)` works in the same kernel and returns a `DatabaseQuery`
+- [ ] The shipped notebook executed top to bottom in one run — **blocked on the free-tier quota**, see below
 
 ## Rollback
 
@@ -257,8 +324,33 @@ layer in this stack that can express *meaning*.
 Recorded as an unreproduced case rather than a success: a schema-level retry may well be reachable
 with a constraint that cannot be met by degrading, but nothing here demonstrated one.
 
+**The Gemini free tier is 20 requests, and a retrying agent spends them two at a time.** Verifying
+this page exhausted it:
+
+```
+ModelHTTPError: status_code: 429, model_name: gemini-3.6-flash
+  Quota exceeded for metric: generativelanguage.googleapis.com/generate_content_free_tier_requests,
+  limit: 20, model: gemini-3.6-flash
+  quotaId: GenerateRequestsPerDayPerProjectPerModel-FreeTier
+  Please retry in 32.449791768s
+```
+
+**The message is self-contradictory and worth reading closely.** The quota id says
+`...RequestsPerDay...` with a value of `20`, which reads as a hard daily ceiling — but `RetryInfo`
+offers 32 seconds, and calls did succeed again about a minute later. Both cannot describe the same
+limit. Whichever is authoritative, the practical shape is the same: **a burst gets refused and a
+paced run does not**, so a notebook that fires several cells in a row is more likely to hit this
+than the same calls typed by hand.
+
+Two follow-on observations from the same window. Switching to `gemini-flash-latest` to dodge the
+limit returned `503 UNAVAILABLE — This model is currently experiencing high demand` instead, so the
+alias is not a reliable escape hatch. And every validator retry is a billable request, which makes
+`retries=3` a quota multiplier as much as a correctness setting — the `requests=2` counter is the
+number to watch.
+
 ## Follow-ups
 
+- [ ] Execute `nb/pydantic-ai-gemini.ipynb` end to end once the free-tier quota resets, and commit it with its outputs 📅 2026-08-22
 - [ ] Reproduce a retry triggered by Pydantic validation alone, with a constraint the model cannot satisfy by giving a worse answer — the one checklist item still open
 - [ ] Give the agent a tool (`@agent.tool`) that inspects a real schema, so `explanation` stops guessing at table names — the current output invents `users` and `orders`
 - [ ] Run the same agent against a second provider and confirm only the model string changes, as [[litellm-streamlit-chat]] does for plain completions

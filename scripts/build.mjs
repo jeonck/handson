@@ -435,12 +435,15 @@ if (existsSync(DIST)) await rm(DIST, { recursive: true });
 await mkdir(path.join(DIST, "data", "notes"), { recursive: true });
 await cp(path.join(ROOT, "site"), DIST, { recursive: true });
 
-// Image assets live in <folder>/img/ next to the documents that use them. The
+// Companion files live in <folder>/img/ (screenshots and figures) and
+// <folder>/nb/ (runnable notebooks) next to the documents that use them. The
 // walker above only collects .md, so without this they never reach dist/ and
-// every screenshot 404s on the published site.
+// every such link 404s on the published site.
 for (const folder of VAULT_DIRS) {
-  const src = path.join(ROOT, folder, "img");
-  if (existsSync(src)) await cp(src, path.join(DIST, folder, "img"), { recursive: true });
+  for (const kind of ["img", "nb"]) {
+    const src = path.join(ROOT, folder, kind);
+    if (existsSync(src)) await cp(src, path.join(DIST, folder, kind), { recursive: true });
+  }
 }
 
 const index = {
