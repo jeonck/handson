@@ -263,8 +263,9 @@ question instead of asking for the schema. It needs a `.env` beside it.
 
 > ⚠️ **The notebook ships with empty output cells.** Its individual behaviours were verified in a
 > real kernel — the two blocks above are that kernel's output — but the notebook as a single
-> top-to-bottom run was not completed: the Gemini free tier ran out first. See
-> [Where this bit us](#where-this-bit-us) for what that limit actually is.
+> top-to-bottom run has not completed on two separate days. The free tier allows **20 requests per
+> day** for this model, and a run needs four of them behind whatever else has already spent the
+> allowance. See [Where this bit us](#where-this-bit-us).
 
 ## Verification checklist
 
@@ -277,7 +278,7 @@ question instead of asking for the schema. It needs a `.env` beside it.
 - [ ] A retry driven by Pydantic schema validation alone — **never reproduced**, see below
 - [x] `run_sync()` in a Jupyter kernel raises `RuntimeError: This event loop is already running`
 - [x] `await agent.run(...)` works in the same kernel and returns a `DatabaseQuery`
-- [ ] The shipped notebook executed top to bottom in one run — **blocked on the free-tier quota**, see below
+- [ ] The shipped notebook executed top to bottom in one run — **attempted twice on separate days, blocked on the free-tier quota both times**
 
 ## Rollback
 

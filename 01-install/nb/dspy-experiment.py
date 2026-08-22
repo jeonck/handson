@@ -5,7 +5,7 @@ load_dotenv()
 import dspy
 from dspy.teleprompt import BootstrapFewShot
 
-dspy.configure(lm=dspy.LM("gemini/gemini-3.6-flash", max_tokens=120, cache=False))
+dspy.configure(lm=dspy.LM("gemini/gemini-3.6-flash", max_tokens=2048, cache=False))
 
 # The house rule, nowhere in the model's training data:
 #   money problems are P1, outages are P2, everything else P3.

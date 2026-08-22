@@ -9,7 +9,7 @@ source: handson
 env: dspy 3.3.1 · litellm 1.97.0 · python-dotenv · Python 3.13.0 on macOS 14.7.5 · Gemini via GEMINI_API_KEY
 verified: 2026-08-21
 verifiability: partial
-verifiability-note: The install, the signature/Predict round trip against Gemini, and the rendered before/after prompts were all verified — the prompt rendering needs no API calls and is fully reproducible. The baseline-versus-compiled accuracy measurement in experiment.py was NOT completed: the Gemini free-tier quota was exhausted partway through and the backoff gave up. Numbers for it are deliberately absent rather than estimated.
+verifiability-note: The install, the signature/Predict round trip against Gemini, the rendered before/after prompts, and the max_tokens truncation finding were all verified — the prompt rendering needs no API calls and is fully reproducible. The baseline-versus-compiled accuracy measurement in dspy-experiment.py has been attempted on two separate days and completed neither time: the free tier allows 20 requests per day for this model and the experiment needs roughly that many. Numbers for it are deliberately absent rather than estimated.
 duration: 25–40 min
 risk: low
 ---
@@ -58,11 +58,14 @@ from dotenv import load_dotenv
 load_dotenv()
 import dspy
 
-dspy.configure(lm=dspy.LM("gemini/gemini-3.6-flash", max_tokens=120, cache=False))
+dspy.configure(lm=dspy.LM("gemini/gemini-3.6-flash", max_tokens=2048, cache=False))
 ```
 
 `cache=False` matters while measuring anything — DSPy caches identical calls, and a cached second
 run of an evaluation reports the first run's numbers instantly.
+
+**`max_tokens=2048` is not generosity, it is the minimum that works with this model.** At `120`
+the answer comes back empty — see [Where this bit us](#where-this-bit-us).
 
 ## The task: a rule the model cannot guess
 
@@ -183,17 +186,26 @@ compiled = BootstrapFewShot(metric=metric, max_bootstrapped_demos=3, max_labeled
 ## What is not measured here
 
 The obvious question — **does the compiled program actually score better?** — has a script and no
-answer. [`dspy-experiment.py`](/01-install/nb/dspy-experiment.py) evaluates a 6-example dev set before and
-after compiling and prints both scores; it was written, started, and did not finish, because the Gemini free tier ran out partway
-through the baseline sweep and a six-attempt backoff was not enough to get through.
+answer. [`dspy-experiment.py`](/01-install/nb/dspy-experiment.py) evaluates a 6-example dev set before
+and after compiling and prints both scores. It has been attempted on two separate days and has not
+completed either time.
+
+The first attempt died on the token budget, which is now fixed in the shipped script and written up
+below. The second, on a fresh day, died on the quota itself:
 
 ```
 RuntimeError: still rate limited after backoff
 ```
 
-Numbers are left blank rather than filled in from a partial run or from expectation. The run is a
-dated follow-up below. What that quota limit is, and why a paced loop hits it, is written up in
-[[pydantic-ai-structured-output]] — same key, same 20-request ceiling.
+**The arithmetic is simply against it.** The free tier allows `20` requests per day for this model
+(`GenerateRequestsPerDayPerProjectPerModel-FreeTier`, `quotaValue: 20`). This experiment needs a
+baseline sweep of 6, a bootstrap pass over the training set, and a second sweep of 6 — around
+20 requests before anything else on the key spends one. A day's entire allowance, with no margin for
+the failed attempt that teaches you the token budget was wrong.
+
+Numbers are left blank rather than filled in from a partial run or from expectation. Finishing this
+needs either a paid key or a dev set small enough to fit the daily ceiling twice over — both are in
+the follow-ups.
 
 ## Verification checklist
 
@@ -203,6 +215,7 @@ dated follow-up below. What that quota limit is, and why a paced loop hits it, i
 - [x] Compiling with `LabeledFewShot(k=4)` grows the request from 2 messages to 10
 - [x] The injected demos appear as `user`/`assistant` turns, not as text inside one message
 - [x] `BootstrapFewShot` imports and accepts `metric`, `max_bootstrapped_demos`, `max_labeled_demos`
+- [x] `max_tokens=120` yields an empty `priority`; `2048` returns `P2` — **both run back to back**
 - [ ] Baseline versus compiled **accuracy** on the dev set — **blocked on quota**, see above
 
 ## Rollback
@@ -223,6 +236,32 @@ The lesson is not "DSPy is expensive" — it is that **the cost of optimization 
 size times the number of candidate programs**, and the default optimizers are happy to spend that.
 Check the arithmetic before pointing `MIPROv2` at a real dataset.
 
+**A reasoning model spends the token budget before it answers, and DSPy reports it as a parse
+failure.** The first version set `max_tokens=120` — ample for the three characters `P1` — and the
+evaluation died on:
+
+```
+Expected to find output fields in the LM response: [priority]
+Actual output fields parsed from the LM response: []
+```
+
+Nothing about that message points at the token budget. The cause is that `gemini-3.6-flash` emits
+**reasoning tokens before its visible answer** — a single earlier call on this key reported
+`output_reasoning_tokens: 1024` — so a 120-token ceiling is consumed by thinking and truncates the
+response before the `[[ ## priority ## ]]` field is ever written. Both budgets, same prompt, back to
+back:
+
+```
+max_tokens=  120 -> priority=''
+max_tokens= 2048 -> priority='P2'
+```
+
+DSPy does warn — `LM response was truncated due to exceeding max_tokens=120` — but the warning
+scrolls past above a traceback that talks about output fields, and **the same setting failed two
+different ways across runs**: once raising `AdapterParseError: The LM returned an empty or null
+response`, once returning an empty string. A budget that looks generous for the *answer* can be far
+too small for the *model*.
+
 **`cache=True` is the default and it lies to a benchmark.** DSPy caches by prompt, so re-running an
 evaluation after a change that does not alter the prompt returns the first run's numbers
 immediately. Set `cache=False` on the LM whenever the thing being measured is the model's behaviour
@@ -230,7 +269,8 @@ rather than the pipeline's plumbing — otherwise a "before and after" can be th
 
 ## Follow-ups
 
-- [ ] Run [`dspy-experiment.py`](/01-install/nb/dspy-experiment.py) once the quota resets and fill in the baseline-versus-compiled table 📅 2026-08-22
+- [ ] Fill in the baseline-versus-compiled table — needs a paid key, or shrink the dev set to 3 so the whole experiment fits inside 20 requests/day 📅 2026-08-25
+- [x] Find out why the first attempt returned no output fields — it was `max_tokens`, now `2048` in the shipped script
 - [ ] Repeat the comparison with `MIPROv2`, which also rewrites the instruction text rather than only selecting demos
 - [ ] Swap the model string for a second provider and re-compile — the claim worth testing is that the *same* signature compiles to a different prompt without code changes
 - [ ] Try a signature with a typed output (`Literal["P1","P2","P3"]`) and see whether the parsing beats a plain `str` with a `desc`
