@@ -363,3 +363,4 @@ number to watch.
 [[fastapi-mvc-layering]] — Pydantic doing the same validation job for HTTP input rather than model output.
 [[bruno-api-client]] — checking an API contract from outside the code that implements it.
 [[markitdown-document-to-markdown]] — the step before this one: turning PDFs, spreadsheets and decks into the Markdown an agent reads.
+[[langgraph-control-flow]] — when one agent call is not enough: loops, branches and an approval gate drawn as an explicit graph.
