@@ -170,6 +170,11 @@ validator saw 2 attempt(s)
 messages exchanged: 5
 ```
 
+<img src="/01-install/img/pydantic-ai-retry-flow.png" width="620" alt="Diagram: prompt produces attempt 1 without a LIMIT, the validator raises ModelRetry, attempt 2 comes back with LIMIT 100 and passes, costing two requests">
+
+*This agent is a script with no interface, so the figure above is a diagram of the run, not a screen
+capture — the values in it are the ones printed by the commands on this page.*
+
 **Pass condition: two attempts, the first without a `LIMIT` and the second with one.** The
 `ModelRetry` message is fed back to the model as a new turn — which is why the message count is 5
 rather than 2, and why the retry text should read as an instruction to the model, not as a log line
