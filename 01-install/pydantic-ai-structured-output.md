@@ -362,3 +362,4 @@ number to watch.
 [[litellm-streamlit-chat]] — the same Gemini key, one layer down: unified completions with no schema, where the reply is still a string.
 [[fastapi-mvc-layering]] — Pydantic doing the same validation job for HTTP input rather than model output.
 [[bruno-api-client]] — checking an API contract from outside the code that implements it.
+[[markitdown-document-to-markdown]] — the step before this one: turning PDFs, spreadsheets and decks into the Markdown an agent reads.
