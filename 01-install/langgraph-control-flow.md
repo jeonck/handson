@@ -313,3 +313,4 @@ and it is one line of test for a node whose entire purpose is preventing an irre
 [[pydantic-ai-structured-output]] — the other agent framework here, where the retry loop is built in rather than drawn as a graph.
 [[litellm-streamlit-chat]] — where a human would actually answer the approval question.
 [[markitdown-document-to-markdown]] — the kind of step that belongs in a node, and whose silent empty output a validation node would catch.
+[[dspy-prompt-optimization]] — for the nodes that call a model, replacing the hand-written prompt inside them with a compiled one.
