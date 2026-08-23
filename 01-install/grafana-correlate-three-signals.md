@@ -4,20 +4,20 @@ date: 2026-08-23
 domain: install
 tags: [observability, grafana, correlation, monitoring]
 stack: [grafana, prometheus, loki, tempo, opentelemetry, podman]
-summary: Three datasources provisioned as files, with the links between them declared in the same config — a Loki derived field turning trace_id in a log line into a Tempo button, and a histogram exemplar carrying a trace ID from a p95 spike to the 355ms trace that produced it. Both hops were walked with real IDs through Grafana's own proxy.
+summary: Three datasources provisioned as files, with the links between them declared in the same config. All three hops were then clicked: a log line to its trace, a histogram exemplar to the 443ms request underneath a p95, and a span back to its own service's logs — where the link says "trace" while the query it builds is scoped per span.
 source: handson
 env: Grafana 13.2.0 · Prometheus 3.14.0 · Loki 3.7.6 · Tempo (grafana/tempo:latest under Podman 5.7.1) · prometheus-client 0.26.0 · macOS 14.7.5
 verified: 2026-08-23
 verifiability: partial
-verifiability-note: Datasource provisioning, health, cross-datasource link configuration and both correlation hops — logs to traces and metrics to traces — were verified against running backends with real IDs resolved on both sides. Both links were also confirmed in the Grafana UI — the derived field on a log row, and an exemplar marker clicked through to its trace. No dashboards, alerting or long-term storage.
+verifiability-note: Datasource provisioning, health, cross-datasource link configuration and both correlation hops — logs to traces and metrics to traces — were verified against running backends with real IDs resolved on both sides. All three links were also clicked in the Grafana UI, and the traces-to-logs selector was checked against two spans of one trace rather than one. No dashboards, alerting or long-term storage.
 duration: 45–60 min
 risk: low
 ---
 
 > **Verified 2026-08-23.** Two real IDs were walked end to end: one fetched from Tempo and found in
 > a Loki log line, and one carried out of a Prometheus histogram bucket by an exemplar and resolved
-> back to its trace — both through Grafana's datasource proxy, and both then clicked in the UI. The
-> two screenshots below are what Grafana rendered.
+> back to its trace — both through Grafana's datasource proxy. All three links were then clicked in
+> the UI, and every screenshot below is what Grafana rendered.
 
 [[prometheus-instrument-and-query]], [[opentelemetry-tracing-two-services]] and
 [[loki-logs-labels-and-cardinality]] each end at the same place: the signal is useful, and getting
@@ -204,6 +204,56 @@ Two details in that screenshot are worth reading:
   [[loki-logs-labels-and-cardinality]] measured: the ID lives in the text, the index stays small, and
   the link works anyway.
 
+## Traces → logs: from a span to that service's lines
+
+The reverse of the derived field, and the one configured by `tracesToLogsV2`. Expanding any span in
+the trace view puts a link in its detail panel. **It reads `Logs for this trace`, not "for this
+span"** — the label follows `filterByTraceID: true` with no `filterBySpanID`, so it scopes to the
+whole trace.
+
+That label is misleading about the half that matters. Reading the link's target on two different
+spans of the same trace:
+
+```
+db.lookup   (inventory span)  ->  {service="inventory"} | …
+validate    (orders span)     ->  {service="orders"}    | …
+```
+
+**The stream selector is per-span even though the label says "trace".** That is the `tags` block
+doing its job — the clicked span's `service.name` resource attribute becomes the `service` label in
+the selector. Click a span in `inventory` and you get inventory's lines; the same trace's `orders`
+lines are excluded. Checking both spans is what makes this a real check: a broken mapping would
+produce one constant selector, and against a single-service trace it would look identical.
+
+The full query Grafana generates is worth reading once:
+
+```logql
+{service="inventory"}
+  | label_format log_line_contains_trace_id=`{{ contains "48f83bf418…" __line__ }}`
+  | log_line_contains_trace_id="true" or trace_id="48f83bf418…"
+```
+
+**It covers both places a trace ID can live.** The `label_format` + `contains __line__` half greps
+the unindexed line — the arrangement [[loki-logs-labels-and-cardinality]] argues for — and the
+`or trace_id="…"` half matches a label, for people who indexed it anyway. Grafana does not know
+which you chose, so it asks for both.
+
+Following the link:
+
+<img src="/01-install/img/grafana-trace-to-logs.png" width="620" alt="Grafana Explore split view with a Tempo trace on the left and, on the right, a Loki result reading 1 line displayed with common labels service=inventory and the matching stock lookup log line">
+
+```
+1 line displayed          Total bytes processed: 708 B
+Common labels: env=lab  log_line_contains_trace_id=true  service=inventory
+
+2026-08-23 12:47:42.02  stock lookup sku=SKU-SLOW cache_hit=False trace_id=48f83bf418b9eefa945dd5891d54a5d3
+```
+
+One line, from the one service whose span was clicked, for the one request. The time window comes
+from `spanStartTimeShift: '-2m'` / `spanEndTimeShift: '2m'` — the link's range was
+`12:45:41 → 12:49:41` around a span that started at `12:47:41`, which is what those two settings are
+for: log lines are written slightly before and after the span they describe.
+
 ## Metrics → traces: the exemplar hop
 
 `exemplarTraceIdDestinations` closes the triangle — a p95 spike on a Prometheus histogram offers a
@@ -316,6 +366,9 @@ the span is on screen. **This is the one thing a histogram cannot do on its own*
 - [x] A histogram exemplar carries a trace ID out of Prometheus via Grafana's proxy — 8 exemplars, 3 over 250ms
 - [x] The slowest exemplar's `0.355s` resolves in Tempo to a `handle_order` span of `355.2ms` — same request, both signals
 - [x] Prometheus stores **0** exemplars without `--enable-feature=exemplar-storage` and **8** with it — checked both ways
+- [x] A span's detail panel offers a logs link, and following it returns **1 line** — the clicked service's, for that trace
+- [x] Two spans of the same trace generate **different** stream selectors (`inventory` vs `orders`) — the `tags` mapping is per-span
+- [x] The `orders` log line for that same trace is **absent** from the `inventory` span's result, so the selector is filtering rather than decorating
 - [x] Grafana renders exemplar markers on the p95 chart, and the tooltip carries `trace_id` plus a `Query with Tempo` link
 - [x] Clicking that link opens the trace — the tooltip's `0.443` and the trace's `443.45ms` are the same request
 
@@ -370,6 +423,20 @@ application that never emitted any. **Two silent layers stacked on each other** 
 format and a missing flag — each producing the same empty result, which is why the checklist above
 records the with/without numbers rather than just the working one.
 
+**Instrumenting the HTTP client means the telemetry traces itself.** The waterfall carries a
+`POST (1.78ms)` span inside `validate` that no application code asked for:
+
+```
+orders   validate      9.36ms
+orders     POST        1.78ms      <- the push to Loki
+```
+
+`HTTPXClientInstrumentor` is what propagates `traceparent` to the downstream service, and it does
+not distinguish a business call from the log shipper's own request. Harmless at this size and
+genuinely confusing at scale — it inflates span counts, and a log-shipping outage shows up as
+latency inside unrelated spans. Real agents ship logs out of process for exactly this reason; if you
+push from inside the request path, suppress the exporter's own client.
+
 **A correlation is only as good as the ID the application remembers to log.** Nothing in Grafana,
 Loki or Tempo can create the link — the trace ID has to be pulled out of the active span and written
 into the log line by the code. `current_trace_id()` is three lines and is the single point where the
@@ -379,7 +446,7 @@ whole scheme fails silently: no error, no warning, just a `TraceID` field that n
 
 - [x] Emit Prometheus exemplars and close the metrics → traces hop — done above, marker clicked through to the trace, with both silent failure modes recorded
 - [ ] Add a provisioned dashboard so the setup survives a fresh install as files rather than clicks
-- [ ] Test the Tempo → Logs direction from a span, which is configured via `tracesToLogsV2` but only exercised in the logs → traces direction here
+- [x] Test the Tempo → Logs direction from a span — done above; the link label says "trace" while the selector is per-span
 - [ ] Replace `service.name`/`service`/`job` with one consistent name across all three signals and see how much of the `tags` translation disappears
 - [ ] Put the whole thing in a compose file so the four processes start together rather than by hand
 
