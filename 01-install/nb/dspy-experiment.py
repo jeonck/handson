@@ -5,28 +5,24 @@ load_dotenv()
 import dspy
 from dspy.teleprompt import BootstrapFewShot
 
-dspy.configure(lm=dspy.LM("gemini/gemini-3.6-flash", max_tokens=2048, cache=False))
+dspy.configure(lm=dspy.LM("gemini/gemini-flash-lite-latest", max_tokens=2048, cache=False))
 
 # The house rule, nowhere in the model's training data:
 #   money problems are P1, outages are P2, everything else P3.
 TRAIN = [
     ("I was double-charged on my invoice this month.", "P1"),
     ("Refund still not received after two weeks.", "P1"),
-    ("Your billing page shows the wrong VAT rate.", "P1"),
     ("The export button crashes the app every time.", "P2"),
     ("We lost yesterday's uploads after the outage.", "P2"),
-    ("API returns 500 on every POST since this morning.", "P2"),
     ("Could you add dark mode to the dashboard?", "P3"),
     ("How do I change my notification settings?", "P3"),
-    ("Loving the new reports, great work.", "P3"),
-    ("Where can I find the keyboard shortcuts?", "P3"),
 ]
+# Three examples, one per class. The free tier allows 20 requests/day for this
+# model and this experiment costs a baseline sweep + a bootstrap pass + a second
+# sweep — a 6-example dev set did not fit inside that twice.
 DEV = [
     ("My card was charged twice for one order.", "P1"),
-    ("Invoice total does not match the quote.", "P1"),
     ("Dashboard freezes when I open the reports tab.", "P2"),
-    ("Login has been failing for all users since 9am.", "P2"),
-    ("Please support CSV export in a future release.", "P3"),
     ("Is there a mobile app planned?", "P3"),
 ]
 mk = lambda rows: [dspy.Example(ticket=t, priority=p).with_inputs("ticket") for t, p in rows]
@@ -66,7 +62,7 @@ baseline = dspy.Predict(Triage)
 b_hits, b_rows = score(baseline, dev, "BASELINE (no examples)")
 
 metric = lambda gold, pred, trace=None: gold.priority == pred.priority.strip().upper()[:2]
-compiled = BootstrapFewShot(metric=metric, max_bootstrapped_demos=3, max_labeled_demos=3).compile(
+compiled = BootstrapFewShot(metric=metric, max_bootstrapped_demos=2, max_labeled_demos=2).compile(
     dspy.Predict(Triage), trainset=train)
 print("\ncompiled demos:", len(compiled.predictors()[0].demos))
 

@@ -4,20 +4,20 @@ date: 2026-08-21
 domain: install
 tags: [ai, llm, python, prompt-engineering]
 stack: [dspy, gemini, python, python-dotenv]
-summary: A signature instead of a prompt string, run against Gemini. The concrete effect is shown by rendering the exact messages DSPy sends — 2 messages and 582 characters before compiling, 10 and 1020 after, with the examples injected as real conversation turns rather than pasted text. The accuracy comparison is written and shipped but not yet run: the Gemini free tier ran out.
+summary: A signature instead of a prompt string, run against Gemini. The effect is shown twice over — the exact messages DSPy sends grow from 2 to 10 with examples injected as real conversation turns, and a compiled program scores 3/3 against a 2/3 baseline, fixing precisely the ticket the house rule is about. The dev set is 3 examples because the free tier allows 20 requests a day, so the direction is measured and the magnitude is not.
 source: handson
 env: dspy 3.3.1 · litellm 1.97.0 · python-dotenv · Python 3.13.0 on macOS 14.7.5 · Gemini via GEMINI_API_KEY
 verified: 2026-08-21
 verifiability: partial
-verifiability-note: The install, the signature/Predict round trip against Gemini, the rendered before/after prompts, and the max_tokens truncation finding were all verified — the prompt rendering needs no API calls and is fully reproducible. The baseline-versus-compiled accuracy measurement in dspy-experiment.py has been attempted on two separate days and completed neither time: the free tier allows 20 requests per day for this model and the experiment needs roughly that many. Numbers for it are deliberately absent rather than estimated.
+verifiability-note: The install, the prompt rendering (no API calls, fully reproducible) and the max_tokens truncation finding were verified against gemini-3.6-flash. The baseline-versus-compiled measurement ran on gemini-flash-lite-latest instead, because 3.6-flash's daily quota was exhausted — so the accuracy numbers and the rest of the page are not from the same model. The dev set is 3 examples, sized by the quota rather than by statistics: the direction of the result is measured, its magnitude is not.
 duration: 25–40 min
 risk: low
 ---
 
-> **Verified 2026-08-21, except the accuracy table.** The prompt renderings below come from a script
-> that makes no API calls, so they reproduce exactly. The one live Gemini result quoted is real. The
-> before/after **accuracy** numbers are missing on purpose — see
-> [What is not measured here](#what-is-not-measured-here).
+> **Verified 2026-08-21, accuracy added 2026-08-22.** The prompt renderings come from a script that
+> makes no API calls, so they reproduce exactly. The accuracy numbers are from a real run — on a
+> different model than the rest of the page, for the reason in
+> [Where this bit us](#where-this-bit-us).
 
 A production prompt is usually a long string with hand-picked examples pasted into it, and it breaks
 when the model changes. DSPy replaces the string with a **signature** — the fields, their types and
@@ -183,29 +183,54 @@ compiled = BootstrapFewShot(metric=metric, max_bootstrapped_demos=3, max_labeled
     dspy.Predict(Triage), trainset=train)
 ```
 
-## What is not measured here
+## Does compiling actually score better?
 
-The obvious question — **does the compiled program actually score better?** — has a script and no
-answer. [`dspy-experiment.py`](/01-install/nb/dspy-experiment.py) evaluates a 6-example dev set before
-and after compiling and prints both scores. It has been attempted on two separate days and has not
-completed either time.
+Yes, on this task — measured, with the caveats stated plainly afterwards.
 
-The first attempt died on the token budget, which is now fixed in the shipped script and written up
-below. The second, on a fresh day, died on the quota itself:
-
-```
-RuntimeError: still rate limited after backoff
+```bash
+python dspy-experiment.py
 ```
 
-**The arithmetic is simply against it.** The free tier allows `20` requests per day for this model
-(`GenerateRequestsPerDayPerProjectPerModel-FreeTier`, `quotaValue: 20`). This experiment needs a
-baseline sweep of 6, a bootstrap pass over the training set, and a second sweep of 6 — around
-20 requests before anything else on the key spends one. A day's entire allowance, with no margin for
-the failed attempt that teaches you the token budget was wrong.
+```
+BASELINE (no examples): 2/3
+   MISS want=P1 got=P2  | My card was charged twice for one order.
+   ok   want=P2 got=P2  | Dashboard freezes when I open the reports tab.
+   ok   want=P3 got=P3  | Is there a mobile app planned?
 
-Numbers are left blank rather than filled in from a partial run or from expectation. Finishing this
-needs either a paid key or a dev set small enough to fit the daily ceiling twice over — both are in
-the follow-ups.
+compiled demos: 2
+
+COMPILED (demos chosen by DSPy): 3/3
+   ok   want=P1 got=P1  | My card was charged twice for one order.
+   ok   want=P2 got=P2  | Dashboard freezes when I open the reports tab.
+   ok   want=P3 got=P3  | Is there a mobile app planned?
+
+RESULT  baseline 2/3  ->  compiled 3/3
+```
+
+**The one example that changed is the one the house rule is about.** Zero-shot, the billing ticket
+went to `P2` — the sensible general answer. After compiling, `P1`. The two cases the model already
+agreed with were right both times, which is what you want: the examples taught the exception without
+disturbing the rest.
+
+**Now the caveats, because a 3-example dev set is a demonstration and not a benchmark.**
+
+- `n = 3`. One example moved. That is enough to show the mechanism works and nowhere near enough to
+  quantify how much it helps — a single flipped answer is the entire difference between these scores.
+- The dev set is small **because of the quota**, not because it is the right size. See
+  [Where this bit us](#where-this-bit-us).
+- **The demos DSPy selected contain no `P1` example at all:**
+
+  ```
+  {'ticket': 'The export button crashes the app every time.', 'priority': 'P2'}
+  {'ticket': 'Could you add dark mode to the dashboard?',     'priority': 'P3'}
+  ```
+
+  The billing case was fixed by examples that are not about billing. `BootstrapFewShot` keeps traces
+  where its metric passed, and the zero-shot program passes on `P2` and `P3` — the cases it already
+  agrees with — so those are the traces available to keep. Why seeing "crash → P2" is enough to move
+  billing to `P1` is not something this run establishes; it is recorded as observed, not explained.
+
+This is the honest shape of the result: **the direction is real and measured, the magnitude is not.**
 
 ## Verification checklist
 
@@ -216,7 +241,8 @@ the follow-ups.
 - [x] The injected demos appear as `user`/`assistant` turns, not as text inside one message
 - [x] `BootstrapFewShot` imports and accepts `metric`, `max_bootstrapped_demos`, `max_labeled_demos`
 - [x] `max_tokens=120` yields an empty `priority`; `2048` returns `P2` — **both run back to back**
-- [ ] Baseline versus compiled **accuracy** on the dev set — **blocked on quota**, see above
+- [x] Baseline scores 2/3 and the compiled program 3/3, with the billing case the one that flips
+- [x] The improvement came from demos containing **no** `P1` example — recorded as observed
 
 ## Rollback
 
@@ -228,9 +254,31 @@ rm -rf .venv
 
 **Optimizers multiply request count, and the free tier notices.** `BootstrapFewShot` runs the
 program over the training set, and the evaluation runs it over the dev set twice — once before
-compiling and once after. A 10-example train and 6-example dev set is a small experiment by any
-standard and still needs roughly 20–25 requests, which is the entire free-tier allowance. Pacing
-calls seven seconds apart was not enough once the day's budget was gone.
+compiling and once after. The first version of this experiment used a 10-example train and 6-example
+dev set: a small experiment by any standard, and still roughly 20–25 requests, which is the entire
+free-tier allowance of `20` per day. It never completed. The version that ran uses **6 train, 3 dev
+and `max_bootstrapped_demos=2`** — about 12 requests — and the dev set is that small for the quota's
+sake, not for the statistics'.
+
+**The quota is per model, and that is the way out.** The limit is
+`GenerateRequestsPerDayPerProjectPerModel-FreeTier` — note `PerModel`. With `gemini-3.6-flash`
+exhausted, three other models answered on the same key immediately:
+
+```
+gemini/gemini-flash-latest           OK
+gemini/gemini-flash-lite-latest      OK
+gemini/gemini-2.5-flash              OK
+```
+
+**The measured result above therefore comes from `gemini-flash-lite-latest`, not the model used
+everywhere else on this page.** That is a real difference in the setup and is called out rather than
+smoothed over — a different model could plausibly produce a different baseline. Switching models to
+dodge a quota is fine for a demonstration and is exactly the kind of thing that invalidates a
+comparison if it goes unrecorded.
+
+**A `retryDelay` of 3 seconds does not mean the wait is 3 seconds.** The exhausted-quota error
+advises `Please retry in 3.148507058s` while naming a *per-day* quota. Backing off six times at 30
+seconds still failed. Read the `quotaId`, not the delay.
 
 The lesson is not "DSPy is expensive" — it is that **the cost of optimization scales with dataset
 size times the number of candidate programs**, and the default optimizers are happy to spend that.
@@ -269,7 +317,9 @@ rather than the pipeline's plumbing — otherwise a "before and after" can be th
 
 ## Follow-ups
 
-- [ ] Fill in the baseline-versus-compiled table — needs a paid key, or shrink the dev set to 3 so the whole experiment fits inside 20 requests/day 📅 2026-08-25
+- [x] Fill in the baseline-versus-compiled table — done at 3 dev examples on `gemini-flash-lite-latest`
+- [ ] Re-run on a dev set of 30+ with a paid key, so the size of the gain can be quantified rather than only its direction 📅 2026-09-05
+- [ ] Re-run the same 3-example experiment on `gemini-3.6-flash` for a like-for-like comparison with the rest of this page
 - [x] Find out why the first attempt returned no output fields — it was `max_tokens`, now `2048` in the shipped script
 - [ ] Repeat the comparison with `MIPROv2`, which also rewrites the instruction text rather than only selecting demos
 - [ ] Swap the model string for a second provider and re-compile — the claim worth testing is that the *same* signature compiles to a different prompt without code changes
