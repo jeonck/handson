@@ -3,10 +3,10 @@ title: Grafana — wiring metrics, logs and traces together so one ID walks betw
 date: 2026-08-23
 domain: install
 tags: [observability, grafana, correlation, monitoring]
-stack: [grafana, prometheus, loki, tempo, opentelemetry, podman]
+stack: [grafana, prometheus, loki, tempo, opentelemetry, podman, docker-compose]
 summary: Three datasources and a dashboard provisioned as files, with the links between them declared in the same config. All three hops were clicked — a log line to its trace, an exemplar to the 443ms request under a p95, a span back to its service's logs — and every panel was checked by replaying its stored query, which caught a ratio panel that reads "No data" whenever nothing is wrong.
 source: handson
-env: Grafana 13.2.0 · Prometheus 3.14.0 · Loki 3.7.6 · Tempo (grafana/tempo:latest under Podman 5.7.1) · prometheus-client 0.26.0 · macOS 14.7.5
+env: Grafana 13.2.0 · Prometheus 3.14.0 · Loki 3.7.6 (Homebrew) / 3.5.7 (image) · Tempo 2.9.1 · Podman 5.7.1 with docker-compose 5.3.1 · prometheus-client 0.26.0 · macOS 14.7.5
 verified: 2026-08-23
 verifiability: partial
 verifiability-note: Datasource provisioning, health, cross-datasource link configuration and both correlation hops — logs to traces and metrics to traces — were verified against running backends with real IDs resolved on both sides. All three links were clicked in the Grafana UI, the traces-to-logs selector was checked against two spans of one trace rather than one, and the provisioned dashboard was verified by replaying every panel's stored query. Alerting, long-term storage and multi-tenancy are unexercised.
@@ -440,6 +440,77 @@ It reads the dashboard as Grafana stored it, not as it was written, so a panel t
 provision shows up as a missing row rather than a passing test. **The first run of this reported `1 of
 7` empty**, which is the finding below.
 
+## Six processes become one file
+
+Everything above was started by hand in six terminals. The compose version is the same configuration
+with one substitution applied everywhere — **`127.0.0.1` becomes a service name** — plus a load
+generator so `up` produces a populated dashboard instead of an empty one:
+
+```yaml title="compose.yml"
+name: three-signals
+
+services:
+  orders:
+    build:
+      context: ./app
+      # docker-compose only auto-detects 'Dockerfile'. Name it or it is not found.
+      dockerfile: Containerfile
+    command: uvicorn orders:app --host 0.0.0.0 --port 8000
+    environment:
+      OTLP_ENDPOINT: http://tempo:4318
+      LOKI_URL: http://loki:3100
+      INVENTORY_URL: http://inventory:8000
+    healthcheck:
+      test: ["CMD-SHELL", "python -c \"import urllib.request as u; u.urlopen('http://localhost:8000/docs')\""]
+      interval: 5s
+      timeout: 3s
+      retries: 20
+    depends_on:
+      tempo: {condition: service_healthy}
+      loki: {condition: service_healthy}
+
+  prometheus:
+    image: docker.io/prom/prometheus:v3.14.0
+    command:
+      - --config.file=/etc/prometheus/prometheus.yml
+      - --storage.tsdb.path=/prometheus
+      - --enable-feature=exemplar-storage
+    volumes:
+      - ./prometheus/prometheus.yml:/etc/prometheus/prometheus.yml:ro,Z
+      - prom-data:/prometheus
+    healthcheck:
+      test: ["CMD", "wget", "-qO-", "http://localhost:9090/-/ready"]
+      interval: 5s
+      timeout: 3s
+      retries: 20
+```
+
+Addresses come from the environment with localhost defaults, so **the same source runs both ways**:
+
+```python title="app/common.py"
+LOKI = os.getenv("LOKI_URL", "http://127.0.0.1:3100") + "/loki/api/v1/push"
+OTLP = os.getenv("OTLP_ENDPOINT", "http://127.0.0.1:4318") + "/v1/traces"
+INVENTORY = os.getenv("INVENTORY_URL", "http://127.0.0.1:8911")
+```
+
+Four addresses move in the app and three in the datasource file. **The dashboard JSON needs no edit
+at all** — it references datasources by the uids `prom`/`loki`/`tempo`, and those did not change.
+That is the payoff for hand-writing the uids rather than accepting generated ones.
+
+```bash
+podman compose up -d
+```
+
+```
+orders up http://orders:8000/metrics        # the scrape target, by service name
+panels with no data: 0 of 7
+```
+
+Same replay of every stored panel query as before, now against containers: seven panels, all with
+data, from nothing but the files. The correlation chain survives the move — an exemplar of `3.15s`
+resolved in Tempo to a two-service trace, and the same ID was found in **both** services' Loki
+streams — so the links depend on the uids and the labels, not on anything host-specific.
+
 ## Verification checklist
 
 - [x] All three datasources appear with the hand-written uids `prom`, `loki`, `tempo`
@@ -452,6 +523,11 @@ provision shows up as a missing row rather than a passing test. **The first run 
 - [x] A histogram exemplar carries a trace ID out of Prometheus via Grafana's proxy — 8 exemplars, 3 over 250ms
 - [x] The slowest exemplar's `0.355s` resolves in Tempo to a `handle_order` span of `355.2ms` — same request, both signals
 - [x] Prometheus stores **0** exemplars without `--enable-feature=exemplar-storage` and **8** with it — checked both ways
+- [x] `podman compose up -d` brings all seven containers up and **0 of 7** panels are empty, from files alone
+- [x] Prometheus scrapes `http://orders:8000/metrics` — the compose service name, not an IP
+- [x] The exemplar → trace → logs chain resolves across the container network, with the ID in **both** services' streams
+- [x] Gating on `service_healthy` removes the start-up outlier: **3.153s → 0.448s** slowest request, measured both ways
+- [x] A healthcheck whose argument contains a space is silently word-split — caught because it made the container `unhealthy`
 - [x] The dashboard appears at `/d/three-signals/` after start-up with **no clicking** — provisioned from the file
 - [x] Every one of the **7 panels** returns data, checked by replaying the dashboard's stored queries — and caught one that did not
 - [x] The p95 panel renders **16 exemplar markers**, so the metrics → traces link works on a dashboard and not only in Explore
@@ -464,6 +540,12 @@ provision shows up as a missing row rather than a passing test. **The first run 
 - [x] Clicking that link opens the trace — the tooltip's `0.443` and the trace's `443.45ms` are the same request
 
 ## Rollback
+
+```bash
+podman compose down -v          # containers and their volumes
+```
+
+Running it by hand instead:
 
 ```bash
 pkill -f "grafana server"; pkill -f "loki -config.file"; pkill -f "prometheus --config"
@@ -513,6 +595,68 @@ Exemplar storage is still behind a feature flag, and its absence is indistinguis
 application that never emitted any. **Two silent layers stacked on each other** — a wrong exposition
 format and a missing flag — each producing the same empty result, which is why the checklist above
 records the with/without numbers rather than just the working one.
+
+**`depends_on` waits for the container to start, not to be ready — and it costs a real request.**
+The first compose run logged this from the load generator:
+
+```
+loadgen: [Errno 111] Connection refused
+```
+
+and produced one request of **3.153 seconds** at nine seconds in, against a slow path that tops out
+near 0.42s. Loki takes about fifteen seconds past container start to answer `/ready`, and the app
+pushes its log line inside the request path. Adding healthchecks and `condition: service_healthy`
+and cold-starting again:
+
+```
+before:  exemplars 48, max 3.153s, 1 over 1s
+after:   exemplars 35, max 0.448s, 0 over 1s
+```
+
+No connection errors either. **`depends_on: [loki]` means "after `podman start` returned", which is
+a claim about the container runtime and not about the software inside it.**
+
+**A healthcheck argument containing a space is silently split, and the failure blames your code.**
+The app's check was written in exec form:
+
+```yaml
+test: ["CMD", "python", "-c", "import urllib.request as u; u.urlopen('http://localhost:8000/docs')"]
+```
+
+The container went `unhealthy`, and compose refused to start anything depending on it. The health
+log said:
+
+```
+  File "<string>", line 1
+    import
+          ^
+SyntaxError: Expected one or more names after 'import'
+```
+
+**Only the word `import` reached Python.** Running the identical command through `podman exec`
+returned `200`, which is what makes this so confusing — the command is right and the delivery is
+broken. The four `wget` checks in the same file all went `healthy`, and every one of their arguments
+is space-free. `CMD-SHELL` passes a single string to `sh -c` and works:
+
+```yaml
+test: ["CMD-SHELL", "python -c \"import urllib.request as u; u.urlopen('http://localhost:8000/docs')\""]
+```
+
+Worth saying plainly: **the gate itself is real.** Compose stopped and reported
+`dependency failed to start: container three-signals-orders-1 is unhealthy` rather than starting the
+load generator against a broken app. A healthcheck that has only ever passed would not have shown
+that.
+
+**`podman compose` is docker-compose wearing a hat, and it does not know what a Containerfile is.**
+
+```
+unable to prepare context: unable to evaluate symlinks in Dockerfile path: …/app/Dockerfile: no such file or directory
+```
+
+`podman build` accepts `Containerfile` as a matter of course; `podman compose` shells out to
+`docker-compose` (it prints so on every invocation), which only auto-detects `Dockerfile`. Either
+rename the file or name it explicitly with `dockerfile: Containerfile`. The error names a file you
+never created, which is a poor clue to a tool substitution happening one layer down.
 
 **A ratio panel reads "No data" exactly when nothing is wrong.** The first panel check came back
 `1 of 7` empty — the error ratio, on a service that was serving traffic and returning 500s. The
@@ -593,7 +737,7 @@ whole scheme fails silently: no error, no warning, just a `TraceID` field that n
 - [x] Add a provisioned dashboard so the setup survives a fresh install as files rather than clicks — done above, three rows on one screen
 - [x] Test the Tempo → Logs direction from a span — done above; the link label says "trace" while the selector is per-span
 - [ ] Replace `service.name`/`service`/`job` with one consistent name across all three signals and see how much of the `tags` translation disappears
-- [ ] Put the whole thing in a compose file so the six processes start together rather than by hand
+- [x] Put the whole thing in a compose file so the six processes start together rather than by hand — done above, plus a load generator
 - [ ] Provision an alert rule against the same p95 query and check it fires, since `provisioning/alerting/` is the directory Grafana already complains about
 - [ ] Re-bucket the histogram: the p95 panel sits at ~450ms against a slow path capped near 420ms, the same interpolation artefact measured in [[prometheus-instrument-and-query]]
 
