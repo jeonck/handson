@@ -6,10 +6,10 @@ tags: [search, logs, indexing, retention, containers]
 stack: [opensearch, opensearch-dashboards, podman, docker-compose]
 summary: A single-node OpenSearch 3.8 with security on, interrogated about its own guesses. Dynamic mapping typed a quoted "412" as text, and duration_ms >= 200 then returned a document whose value was 87 — no error, just string comparison. An index template fixes it and does nothing to the index that already exists, and an ISM policy then rolls that index over and deletes it while writers keep addressing one alias.
 source: handson
-env: OpenSearch 3.8.0 (Lucene 10.5.0) · OpenSearch Dashboards 3.8.0 · Podman 5.7.1 with docker-compose 5.3.1 · macOS 14.7.5
+env: OpenSearch 3.8.0 (Lucene 10.5.0) · OpenSearch Dashboards 3.8.0 (Chromium via Playwright for the UI steps) · Podman 5.7.1 with docker-compose 5.3.1 · macOS 14.7.5
 verified: 2026-08-23
 verifiability: partial
-verifiability-note: Verified on a single node with the demo TLS certificates and the built-in admin user. The full ISM lifecycle — rollover, a warm state with read_only/force_merge/index_priority, and deletion — was exercised end to end, but with lab-sized minute-scale transitions and a tightened scheduler rather than a real policy measured in days. The warm tier's allocation half needs more than one node. Multi-node allocation, real certificates, role-based access for anyone other than admin, and snapshots are unexercised — and cluster behaviour under node loss is the thing a single node structurally cannot show.
+verifiability-note: Verified on a single node with the demo TLS certificates and the built-in admin user. The full ISM lifecycle — rollover, a warm state with read_only/force_merge/index_priority, and deletion — was exercised end to end, but with lab-sized minute-scale transitions and a tightened scheduler rather than a real policy measured in days. The warm tier's allocation half needs more than one node. The Dashboards steps — tenant selection, index pattern creation, Discover — were driven through the real UI and screenshotted. Multi-node allocation, real certificates, role-based access for anyone other than admin, saved visualizations and snapshots are unexercised — and cluster behaviour under node loss is the thing a single node structurally cannot show.
 duration: 40–60 min
 risk: low
 ---
@@ -423,6 +423,90 @@ curl -sk -u "admin:$OPENSEARCH_ADMIN_PASSWORD" \
 worth checking explicitly — an alias that does not follow the rollover is the failure this design
 exists to prevent, and it looks identical until someone queries for yesterday's data.
 
+## Dashboards: an index pattern, and what it exposes
+
+Everything so far went through the API. Dashboards needs one more object before it can show any of
+it: an **index pattern**, which is a saved object naming a set of indices and, optionally, the field
+to treat as time.
+
+**Dashboards Management → Index patterns → Create index pattern**, `applogs*`, then `@timestamp` as
+the time field. The result is the most useful screen in the product for anyone who has read this far:
+
+<img src="/01-install/img/opensearch-index-pattern-fields.png" width="620" alt="OpenSearch Dashboards index pattern page for applogs* showing 11 fields with Searchable and Aggregatable columns; message is searchable but not aggregatable while service and level are both">
+
+**The `Aggregatable` column is this entire page rendered as a checkmark.** `service` and `level` are
+`keyword`, so both dots are filled. `duration_ms` is a number. `message` is `text`, so it is
+searchable and **not aggregatable** — the same fact that produced the `fielddata is disabled` error
+earlier, shown here before anyone writes a query.
+
+Confirmed against the saved object itself rather than read off the screen:
+
+```bash
+curl -s -u "admin:$OPENSEARCH_ADMIN_PASSWORD" \
+  "http://127.0.0.1:5601/api/saved_objects/_find?type=index-pattern&fields=fields"
+```
+
+```
+    duration_ms  type=number  searchable=True aggregatable=True
+    level        type=string  searchable=True aggregatable=True
+    message      type=string  searchable=True aggregatable=False
+    service      type=string  searchable=True aggregatable=True
+```
+
+**The pattern is a snapshot, not a live view.** Those flags were copied from the mapping at creation
+time. Add a field later and it is missing until the pattern is refreshed — the circular-arrow button
+on that page.
+
+### Discover, and the filter that hides your data
+
+<img src="/01-install/img/opensearch-discover.png" width="620" alt="OpenSearch Dashboards Discover showing the applogs* pattern over the last 24 hours with Results 60 of 60, a histogram with two clusters of documents, and expanded log rows">
+
+Sixty documents were indexed, half timestamped within the last few minutes and half several hours
+old. The same Discover screen, same data, two time ranges:
+
+| Time range | Results |
+|---|---|
+| Last 15 minutes *(the default)* | **26 / 60** |
+| Last 24 hours | **60 / 60** |
+
+**The default is fifteen minutes, and it is the most common reason a new index pattern looks
+empty.** Nothing is wrong, nothing is logged, and the histogram is blank. Before debugging ingestion,
+widen the range — and note the count in the table above drifts downward on its own as documents age
+out of a relative window, which is worth knowing before comparing two screenshots taken minutes
+apart.
+
+### One place the UI oversells what the mapping allows
+
+Clicking `message` in the field sidebar offers **Top 5 values** and a **Visualize** button, on a
+field the same product just marked `aggregatable=False`:
+
+<img src="/01-install/img/opensearch-field-popover-text.png" width="620" alt="Discover field sidebar popover for the message field showing Top 5 values with percentages and a Visualize button, for a text field that is not aggregatable">
+
+Those percentages are computed **client-side from the documents already on screen**, not by asking
+OpenSearch. That is why whole strings like `order placed sku=SKU-955` appear — a real terms
+aggregation on an analysed `text` field would return single tokens, and in fact returns nothing at
+all:
+
+```bash
+-d '{"aggs":{"m":{"terms":{"field":"message"}}}}'
+```
+
+```
+  FAILS: Text fields are not optimised for operations that require per-document field data...
+```
+
+```bash
+-d '{"aggs":{"s":{"terms":{"field":"service"}}}}'
+```
+
+```
+  buckets: [('orders', 31), ('inventory', 29)]
+```
+
+**A sidebar summary is not evidence that a field can be aggregated.** It is a sample of the current
+result set, and it looks identical for a field that will fail the moment a dashboard panel asks the
+cluster the same question.
+
 ## Verification checklist
 
 - [x] A weak `OPENSEARCH_INITIAL_ADMIN_PASSWORD` **fails the container**, exit `1`, with the regex rule named
@@ -437,6 +521,10 @@ exists to prevent, and it looks identical until someone queries for yesterday's 
 - [x] `_reindex` coerces `"412"` to `412` with `failures: 0`
 - [x] `dynamic: strict` rejects a typo'd field with `400`; the dynamic index accepts it and keeps it
 - [x] Dashboards reports `overall: green` — and `401` without credentials
+- [x] An index pattern `applogs*` is created through the UI with `@timestamp` as the time field, and lists **11 fields**
+- [x] The pattern records `message` as `aggregatable=False` and `service`/`level` as `True` — read from the saved object, not the screen
+- [x] Discover shows **26/60** at the default 15 minutes and **60/60** at 24 hours, on identical data
+- [x] The field sidebar offers Top 5 values for `message` while a terms aggregation on it **fails** — the summary is client-side
 - [x] An `ism_template` attaches the policy at index creation, with no per-index step
 - [x] Rollover fires on `min_doc_count` and creates `applogs-000002`
 - [x] The write alias **follows** the rollover, and a document written to `applogs` afterwards lands in `-000002`
@@ -515,6 +603,21 @@ early. So the common advice that "force merge reclaims space from deleted docume
 the content and wrong about the timing: **the space comes back at the merge, the `docs.deleted`
 count does not go to zero until the lease lets it.** Do not use `docs.deleted` as the check that a
 merge worked; use the segment count and, patiently, the store size.
+
+**The security plugin blocks the whole UI on first login with a tenant chooser.** Before any
+navigation is possible:
+
+```
+Select your tenant
+Global  — shared between every OpenSearch Dashboards user
+Private — exclusive to each user and can't be shared
+```
+
+It looks like a dismissible nicety and is not: **an index pattern saved in the Private tenant is
+invisible to everyone else, including you in a later session that picked Global.** Saved objects —
+index patterns, visualizations, dashboards — are stored per tenant. Choosing Global here is what
+makes the work above shared, and "my index pattern disappeared" almost always means someone was in
+the other one.
 
 **ISM is slow by default, and nothing about that is obvious.** Reading the shipped values rather
 than assuming them:
@@ -703,6 +806,7 @@ data is missing**, and getting used to ignoring it in a lab is how it gets ignor
 - [ ] Wait out `soft_deletes.retention_lease.period` (or lower it) and confirm `docs.deleted` finally drops to zero
 - [ ] Replace the demo certificates and drop `-k`, which is the first real step toward anything non-lab
 - [ ] Create a non-admin role that can read `applogs-*` and nothing else, and confirm it is refused elsewhere
+- [ ] Build a saved visualization and dashboard on top of this pattern, and check they survive `compose down -v` — saved objects live in `.kibana`, which the data volume holds
 - [ ] Ship the logs from [[loki-logs-labels-and-cardinality]] into this index and compare what each system makes cheap — labels versus mappings is the same decision made twice
 - [ ] Measure the storage cost of `text` + `.keyword` against plain `keyword` on a corpus big enough to matter
 - [ ] Take a snapshot to a filesystem repository and restore it into a fresh cluster
