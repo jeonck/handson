@@ -9,7 +9,7 @@ source: handson
 env: OpenSearch 3.8.0 (Lucene 10.5.0) · OpenSearch Dashboards 3.8.0 (Chromium via Playwright for the UI steps) · Podman 5.7.1 with docker-compose 5.3.1 · macOS 14.7.5
 verified: 2026-08-23
 verifiability: partial
-verifiability-note: Verified on a single node with the demo TLS certificates and the built-in admin user. The full ISM lifecycle — rollover, a warm state with read_only/force_merge/index_priority, and deletion — was exercised end to end, but with lab-sized minute-scale transitions and a tightened scheduler rather than a real policy measured in days. The warm tier's allocation half needs more than one node. The Dashboards steps — tenant selection, index pattern creation, Discover, and a three-panel dashboard imported from a file and restored after the volume was destroyed — were driven through the real UI and screenshotted. Multi-node allocation, real certificates, role-based access for anyone other than admin, saved visualizations and snapshots are unexercised — and cluster behaviour under node loss is the thing a single node structurally cannot show.
+verifiability-note: Verified on a single node with the demo TLS certificates and the built-in admin user. The full ISM lifecycle — rollover, a warm state with read_only/force_merge/index_priority, and deletion — was exercised end to end, but with lab-sized minute-scale transitions and a tightened scheduler rather than a real policy measured in days. The warm tier's allocation half needs more than one node. The Dashboards steps — tenant selection, index pattern creation, Discover, and a three-panel dashboard imported from a file and restored after the volume was destroyed — were driven through the real UI and screenshotted. Multi-node allocation, real certificates, role-based access for anyone other than admin, and snapshots are unexercised — and cluster behaviour under node loss is the thing a single node structurally cannot show.
 duration: 40–60 min
 risk: low
 ---
@@ -618,6 +618,9 @@ Exporting the dashboard alone gives you a file that imports cleanly and renders 
 - [x] The percentile table returns real numbers — `inventory` p95 `875` vs `orders` p95 `249.6` — which only works because `duration_ms` is `integer`
 - [x] `compose down -v` destroys the saved objects (`saved objects found: 0`), and re-importing the file rebuilds them
 - [x] An import with no tenant header lands in the **private** tenant: `.kibana_1` holds only config
+- [x] `_cat/indices` and `_count` **disagree** on the ISM history index — 1 versus 0, with no error
+- [x] The super-admin certificate reads **6** history entries from the index `admin` sees as empty
+- [x] Four protected system indices all read 0 to `admin` while holding documents; `.kibana*` does not
 - [x] The same cluster shows the dashboard in Global and **not** in Private, from two browser sessions
 - [x] An `ism_template` attaches the policy at index creation, with no per-index step
 - [x] Rollover fires on `min_doc_count` and creates `applogs-000002`
@@ -735,6 +738,69 @@ also how the `aggregatable` flags from earlier get into the UI in the first plac
 
 **The check that catches all three is rendering the dashboard and reading the panels** — not the
 import response, and not `_find` listing the objects, both of which were happy throughout.
+
+**The ISM history index was never empty — the security plugin was hiding it.** `_ism/explain` showed
+every transition live, while a search of `.opendistro-ism-managed-index-history-*` returned nothing.
+The two numbers disagree, from the same cluster at the same moment:
+
+```
+_cat/indices  ->  docs.count 1,  store 8.9kb
+_count        ->  {"count":0,"_shards":{"total":1,"successful":1,"failed":0}}
+```
+
+**No error, no `403`, and the shard reports success.** `_cat` reads cluster metadata and sees the
+documents; the search path goes through the security plugin and comes back empty. Confirmed by
+asking twice over, as the `admin` user and as super-admin with the demo `kirk` client certificate,
+which bypasses the plugin entirely:
+
+```bash
+curl -sk -u "admin:<REDACTED>" "https://localhost:9200/$H/_count"
+curl -sk --cert config/kirk.pem --key config/kirk-key.pem "https://localhost:9200/$H/_count"
+```
+
+```
+  as admin:       {"count":0,...}
+  as super-admin: {"count":6,...}
+```
+
+The cause is one line of the demo configuration:
+
+```yaml
+plugins.security.system_indices.enabled: true
+```
+
+With no explicit `system_indices.indices` list, the plugin's defaults apply, and they cover the
+plugin state indices. The same comparison across several of them:
+
+| Index | as `admin` | as super-admin | `_cat` |
+|---|---|---|---|
+| `.opendistro-ism-managed-index-history-…` | 0 | **6** | 6 |
+| `.opendistro-ism-config` | 0 | **5** | 15 |
+| `.plugins-ml-config` | 0 | **1** | 1 |
+| `.opendistro_security` | 0 | **9** | 9 |
+| `.kibana_1` | 0 | 0 | 0 |
+
+`.kibana*` is **not** in that set — the saved objects were read out of it as `admin` earlier in this
+page. It reads 0 here because this run had nothing imported into it, which is a useful reminder that
+a zero can mean two different things.
+
+And the history itself, once readable, is exactly the audit trail `_ism/explain` showed:
+
+```
+  applogs-000001   hot    -              Successfully initialized policy: applogs-retention
+  applogs-000001   hot    rollover       Successfully rolled over index [index=applogs-000001]
+  applogs-000002   hot    -              Successfully initialized policy: applogs-retention
+  applogs-000001   -      -              Transitioning to warm [index=applogs-000001]
+  applogs-000001   warm   read_only      Successfully set index to read-only
+  applogs-000001   warm   force_merge    …
+```
+
+**The lesson is bigger than ISM.** A protected system index answers every query with zero rather
+than a denial, so "the index is empty" and "you are not allowed to see this" are indistinguishable
+from the response. **When a system index reads empty, compare `_cat/indices` against `_count` before
+believing it** — they disagree exactly when something is being hidden. The other documented routes
+to that data, neither exercised here, are adding the index to a role's `system_index` permissions or
+turning the protection off.
 
 **Saved objects imported over the API land in the caller's *private* tenant.** After a clean import
 with no tenant header, the Global tenant index held nothing but config:
@@ -961,7 +1027,7 @@ data is missing**, and getting used to ignoring it in a lab is how it gets ignor
 
 ## Follow-ups
 
-- [ ] Work out why `.opendistro-ism-managed-index-history-*` stayed empty while `_ism/explain` showed every transition — the audit trail is the part an operator would want after the fact
+- [ ] Grant a role the `system_index` permission for `.opendistro-ism-*` and confirm the history becomes readable without the super-admin certificate — the supported route this page names but does not exercise
 - [ ] Add an `allocation` action moving warm indices onto dedicated nodes by attribute — the half of a warm tier a single node structurally cannot show
 - [ ] Wait out `soft_deletes.retention_lease.period` (or lower it) and confirm `docs.deleted` finally drops to zero
 - [ ] Replace the demo certificates and drop `-k`, which is the first real step toward anything non-lab
