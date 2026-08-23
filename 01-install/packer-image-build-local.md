@@ -260,7 +260,7 @@ step.
 
 ## Follow-ups
 
-- [ ] Run the same template shape against `amazon-ebs` on the rig from [[terraform-state-operations]]'s harness and record what the instance lifecycle actually costs per build
+- [x] Run the same template shape against `amazon-ebs` — done in [[packer-aws-ami]], including the launch test the docker builder cannot motivate
 - [ ] Add the `manifest` post-processor and commit its output, so the image ID for each version is recorded rather than read out of a scrollback
 - [ ] Replace the shell provisioner with Ansible and confirm the template structure is unchanged — the claim Packer makes about provisioner portability
 - [ ] Build the same artifact twice on two different machines and compare IDs, to see whether anything beyond timestamps diverges
@@ -271,3 +271,4 @@ step.
 [[gitlab-ci-argocd-fastapi-onprem]] — the same argument about tags versus digests, applied to deploys rather than builds.
 [[terraform-state-operations]] — the other half of immutable infrastructure: Packer bakes the image, Terraform places it.
 [[onprem-3node-kubeadm-ubuntu]] — configuring machines in place, which is what an image build replaces.
+[[packer-aws-ami]] — the same template pointed at AWS, where the artifact costs money until it is deleted.
