@@ -9,7 +9,7 @@ source: handson
 env: OpenSearch 3.8.0 (Lucene 10.5.0) · OpenSearch Dashboards 3.8.0 (Chromium via Playwright for the UI steps) · Podman 5.7.1 with docker-compose 5.3.1 · macOS 14.7.5
 verified: 2026-08-23
 verifiability: partial
-verifiability-note: Verified on a single node with the demo TLS certificates and the built-in admin user. The full ISM lifecycle — rollover, a warm state with read_only/force_merge/index_priority, and deletion — was exercised end to end, but with lab-sized minute-scale transitions and a tightened scheduler rather than a real policy measured in days. The warm tier's allocation half needs more than one node. The Dashboards steps — tenant selection, index pattern creation, Discover, and a three-panel dashboard imported from a file and restored after the volume was destroyed — were driven through the real UI and screenshotted. Multi-node allocation, real certificates, role-based access for anyone other than admin, and snapshots are unexercised — and cluster behaviour under node loss is the thing a single node structurally cannot show.
+verifiability-note: Verified on a single node with the demo TLS certificates and the built-in admin user. The full ISM lifecycle — rollover, a warm state with read_only/force_merge/index_priority, and deletion — was exercised end to end, but with lab-sized minute-scale transitions and a tightened scheduler rather than a real policy measured in days. The warm tier's allocation half needs more than one node. The Dashboards steps — tenant selection, index pattern creation, Discover, and a three-panel dashboard imported from a file and restored after the volume was destroyed — were driven through the real UI and screenshotted. Snapshot and restore were exercised across a destroyed and rebuilt cluster, but against a filesystem repository on one node — object-storage repositories and multi-node repository access are unexercised, as are multi-node allocation and real certificates — and cluster behaviour under node loss is the thing a single node structurally cannot show.
 duration: 40–60 min
 risk: low
 ---
@@ -599,6 +599,124 @@ curl -s -u "admin:$OPENSEARCH_ADMIN_PASSWORD" \
 `includeReferencesDeep` is what pulls the three visualizations and the index pattern along with it.
 Exporting the dashboard alone gives you a file that imports cleanly and renders nothing.
 
+## Snapshot and restore, into a genuinely fresh cluster
+
+A snapshot repository is a directory, and **it has to be somewhere the cluster is allowed to write
+and somewhere that outlives the data volume** — which rules out a named volume, because
+`compose down -v` takes those with it:
+
+```yaml title="compose.yml"
+    environment:
+      # A snapshot repository must be on an allow-listed path, and the
+      # directory has to outlive the data volume to be worth anything.
+      path.repo: /mnt/snapshots
+    volumes:
+      - os-data:/usr/share/opensearch/data
+      - ./snapshots:/mnt/snapshots:Z
+```
+
+`path.repo` is an allow-list, and it is enforced:
+
+```bash
+-X PUT ".../_snapshot/bad-fs" -d '{"type":"fs","settings":{"location":"/tmp/elsewhere"}}'
+```
+
+```
+  status: 500
+  reason: [bad-fs] location [/tmp/elsewhere] doesn't match any of the locations specified by path.repo
+```
+
+```bash
+curl -sk -u "admin:$OPENSEARCH_ADMIN_PASSWORD" \
+  -X PUT "https://127.0.0.1:9200/_snapshot/local-fs" \
+  -d '{"type":"fs","settings":{"location":"/mnt/snapshots","compress":true}}'
+
+curl -sk -u "admin:$OPENSEARCH_ADMIN_PASSWORD" \
+  -X PUT "https://127.0.0.1:9200/_snapshot/local-fs/snap-1?wait_for_completion=true" \
+  -d '{"indices":"applogs-*","include_global_state":true}'
+```
+
+```
+  name: snap-1 | state: SUCCESS
+  indices: ['applogs-000001']
+  shards: {'total': 1, 'failed': 0, 'successful': 1} | duration: 200 ms
+```
+
+**`_verify` on the repository is worth running once** — it confirms every node can actually write
+there, which is the failure a multi-node cluster hits and a single node cannot show.
+
+### Destroying the cluster is the only honest test
+
+```bash
+podman compose down -v      # data volume gone; ./snapshots is a bind mount and stays
+podman compose up -d
+```
+
+```
+  applogs indices: (none)
+  index template:  0 found
+  ISM policy:      MISSING
+```
+
+Re-registering the same repository against the same directory **discovers** the snapshot rather than
+creating anything:
+
+```
+  id      status indices successful_shards
+  snap-1 SUCCESS       1                 1
+```
+
+That is the property that makes a repository a backup: **the snapshot is the files, not a record in
+the cluster that made it.**
+
+```bash
+-X POST ".../_snapshot/local-fs/snap-1/_restore?wait_for_completion=true" -d '{"indices":"applogs-*"}'
+```
+
+```
+  docs:        800
+  duration_ms  integer
+  service      keyword
+  message      text
+  level        keyword
+  alias:       applogs applogs-000001 true
+  rollover_alias setting: applogs
+```
+
+Everything index-level came back — documents, the mapping this whole page is about, the write alias,
+and the ISM rollover setting. The check that matters is not the document count but that the data is
+still *usable*:
+
+```
+  duration_ms >= 800 -> 42 hits
+```
+
+A numeric range on a numeric field, which is exactly what the dynamically-mapped index could not do.
+
+### What a snapshot does not bring back
+
+```
+  index template:  0 found
+  ISM policy:      MISSING
+```
+
+Templates, ISM policies and cluster settings are **cluster state**, not index data. They travel in
+`include_global_state`, which defaults to `false` on restore even when the snapshot was taken with
+it `true`. And under the security plugin you cannot simply ask for it — see
+[Where this bit us](#where-this-bit-us).
+
+**Which settles how the two halves of this page divide up.** Snapshots restore *data*; the files
+this page has been accumulating restore *configuration*:
+
+| Artifact | Comes back from |
+|---|---|
+| Documents, mappings, aliases | `snap-1` in the repository |
+| Index template | `applogs-template.json` |
+| ISM policy | `applogs-ism.json` |
+| Index pattern, visualizations, dashboard | `applogs-objects.ndjson` |
+
+A cluster is only as recoverable as the least reproducible of those four.
+
 ## Verification checklist
 
 - [x] A weak `OPENSEARCH_INITIAL_ADMIN_PASSWORD` **fails the container**, exit `1`, with the regex rule named
@@ -628,6 +746,12 @@ Exporting the dashboard alone gives you a file that imports cleanly and renders 
 - [x] With it on, that role reads **7** history entries and `admin` gets an explicit **403** instead of a silent zero
 - [x] The granted role is still refused on an index it was not given — `403` on `applogs`
 - [x] Ordinary indices are unaffected for `admin` after the change
+- [x] A repository location outside `path.repo` is refused, naming the setting
+- [x] `_verify` reports the node can write to the repository
+- [x] After `compose down -v` the cluster is empty and re-registering the repository **discovers** `snap-1` from the files
+- [x] A restore returns **800 documents**, the `integer` mapping, the write alias and the `rollover_alias` setting
+- [x] `duration_ms >= 800` returns **42** hits after the restore — the data is numerically usable, not merely present
+- [x] The index template and ISM policy do **not** come back, and a restore asking for global state is refused `403`
 - [x] The same cluster shows the dashboard in Global and **not** in Private, from two browser sessions
 - [x] An `ism_template` attaches the policy at index creation, with no per-index step
 - [x] Rollover fires on `min_doc_count` and creates `applogs-000002`
@@ -745,6 +869,49 @@ also how the `aggregatable` flags from earlier get into the UI in the first plac
 
 **The check that catches all three is rendering the dashboard and reading the panels** — not the
 import response, and not `_find` listing the objects, both of which were happy throughout.
+
+**A restore with `include_global_state` is refused, and the error blames the wrong thing.** The same
+user, the same snapshot, one flag apart:
+
+```
+  {"indices":"applogs-*"}                              -> restored, 800 docs
+  {"indices":"applogs-*","include_global_state":true}  -> 403
+```
+
+```
+  type:   security_exception
+  reason: no permissions for [cluster:admin/snapshot/restore] and User [name=admin, backend_roles=[admin], ...]
+```
+
+**`admin` plainly does have that permission** — it had just used it. The security plugin refuses
+restores that carry global state, because global state includes the cluster's security
+configuration and restoring it would overwrite the users and roles of the cluster you are restoring
+*into*. That is a sound refusal wrapped in a message that sends you to look at role definitions.
+The relevant configuration is two lines of the demo setup:
+
+```yaml
+plugins.security.enable_snapshot_restore_privilege: true
+plugins.security.check_snapshot_restore_write_privileges: true
+```
+
+The practical consequence: **with the security plugin on, templates and ISM policies do not come
+back from a snapshot at all.** They have to be re-applied from files, which is the argument for
+keeping them as files in the first place.
+
+**And the sequence that nearly cost the data.** A restore over an index that already exists fails,
+so the natural move is to delete the index and restore again — which is what happened here:
+
+```
+  DELETE applogs-000001            -> ok
+  restore with global state        -> 403
+  _cat/indices applogs-*           -> (none)
+```
+
+For the length of that gap the 800 documents existed **only in the snapshot**, because the failure
+came after the delete. Nothing was lost — the retry without the flag restored all 800 — but the
+order is worth stating plainly: **restore into a new index name and swap an alias, or at minimum
+prove the restore works before deleting anything.** `rename_pattern` and `rename_replacement` on the
+restore body exist for exactly this, and are the safer default.
 
 **The ISM history index was never empty — the security plugin was hiding it.** `_ism/explain` showed
 every transition live, while a search of `.opendistro-ism-managed-index-history-*` returned nothing.
@@ -1092,7 +1259,8 @@ data is missing**, and getting used to ignoring it in a lab is how it gets ignor
 - [ ] Put `applogs-objects.ndjson` and the index template in a repository and import both from CI, so a fresh cluster comes up complete without anyone opening the UI
 - [ ] Ship the logs from [[loki-logs-labels-and-cardinality]] into this index and compare what each system makes cheap — labels versus mappings is the same decision made twice
 - [ ] Measure the storage cost of `text` + `.keyword` against plain `keyword` on a corpus big enough to matter
-- [ ] Take a snapshot to a filesystem repository and restore it into a fresh cluster
+- [ ] Restore with `rename_pattern`/`rename_replacement` into a new index name and swap the alias, instead of deleting the target first
+- [ ] Point the repository at object storage with the `repository-s3` plugin, which is what a real backup uses and what a bind mount cannot represent
 
 ## Related
 
