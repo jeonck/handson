@@ -9,7 +9,7 @@ source: handson
 env: Grafana 13.2.0 · Prometheus 3.14.0 · Loki 3.7.6 (Homebrew) / 3.5.7 (image) · Tempo 2.9.1 · Podman 5.7.1 with docker-compose 5.3.1 · prometheus-client 0.26.0 · macOS 14.7.5
 verified: 2026-08-23
 verifiability: partial
-verifiability-note: Datasource provisioning, health, cross-datasource link configuration and both correlation hops — logs to traces and metrics to traces — were verified against running backends with real IDs resolved on both sides. All three links were clicked in the Grafana UI, the traces-to-logs selector was checked against two spans of one trace rather than one, and the provisioned dashboard was verified by replaying every panel's stored query. Alerting, long-term storage and multi-tenancy are unexercised.
+verifiability-note: Datasource provisioning, health, cross-datasource link configuration and both correlation hops — logs to traces and metrics to traces — were verified against running backends with real IDs resolved on both sides. All three links were clicked in the Grafana UI, the traces-to-logs selector was checked against two spans of one trace rather than one, the provisioned dashboard was verified by replaying every panel's stored query, and the alert rules were verified through a real webhook receiver including a resolve. Long-term storage, multi-tenancy and any real notifier (email, Slack, PagerDuty) are unexercised.
 duration: 45–60 min
 risk: low
 ---
@@ -511,6 +511,121 @@ data, from nothing but the files. The correlation chain survives the move — an
 resolved in Tempo to a two-service trace, and the same ID was found in **both** services' Loki
 streams — so the links depend on the uids and the labels, not on anything host-specific.
 
+## Alert rules, and proving one can fire
+
+`provisioning/alerting/` is the directory Grafana complains about at start-up. Filling it takes two
+files: where notifications go, and what fires.
+
+```yaml title="provisioning/alerting/contactpoints.yml"
+apiVersion: 1
+
+contactPoints:
+  - orgId: 1
+    name: webhook-sink
+    receivers:
+      - uid: sink-1
+        type: webhook
+        settings:
+          url: http://sink:8000/
+          httpMethod: POST
+
+policies:
+  - orgId: 1
+    receiver: webhook-sink
+    group_by: [alertname]
+    group_wait: 10s
+```
+
+**The webhook points at a nine-line container that prints what it receives.** Without a receiver,
+"the alert fired" means "a row in the UI turned red", which is not the same claim as "a notification
+was delivered" — and the gap between those two is where most alerting setups actually fail.
+
+```yaml title="provisioning/alerting/rules.yml"
+groups:
+  - orgId: 1
+    name: orders
+    folder: Alerts
+    interval: 10s          # 1m is normal; 10s so a lab reaches Alerting while you watch
+    rules:
+      - uid: orders-p95-slow
+        title: OrdersP95Slow
+        condition: C
+        for: 30s
+        labels: {severity: warning}
+        annotations:
+          description: "p95 is {{ $values.A }}s, over the 0.25s threshold"
+        noDataState: NoData
+        execErrState: Error
+        data:
+          - refId: A
+            relativeTimeRange: {from: 300, to: 0}
+            datasourceUid: prom
+            model:
+              refId: A
+              instant: true
+              expr: histogram_quantile(0.95, sum by (le) (rate(orders_request_seconds_bucket[1m])))
+          - refId: C
+            datasourceUid: __expr__        # the expression pipeline, not a real datasource
+            model:
+              refId: C
+              type: threshold
+              expression: A
+              conditions:
+                - evaluator: {type: gt, params: [0.25]}
+```
+
+A Grafana rule is **a query and a separate threshold expression**, joined by `condition: C`. The
+query lives on the datasource; the comparison lives on the magic uid `__expr__`. That split is why
+the same rule shape works against Prometheus, Loki or anything else.
+
+### A rule that cannot fail is not a check
+
+Three rules were provisioned, and the third exists only to be wrong:
+
+| Rule | Threshold | Expected |
+|---|---|---|
+| `OrdersP95Slow` | p95 > 0.25s | fires — the slow path guarantees ~0.45s |
+| `OrdersErrorRatio` | 5xx ratio > 5% | fires — 12% is injected |
+| `OrdersP95Absurd` | p95 > **5s** | **stays Normal** |
+
+`OrdersP95Absurd` runs the identical query as the first rule. If it ever fires, the threshold is not
+being applied and the other two prove nothing.
+
+<img src="/01-install/img/grafana-provisioned-alert-rules.png" width="620" alt="Grafana's alert rules list showing three rules each marked Provisioned: OrdersP95Slow and OrdersErrorRatio with red firing icons and one instance each, and OrdersP95Absurd with a green Normal icon and no instances">
+
+Two red, one green, all three badged `Provisioned`. What the sink received:
+
+```json
+{"status": "firing",   "alertname": "OrdersErrorRatio", "severity": "critical", "value": "... value=0.11844894404725817 ..."}
+{"status": "firing",   "alertname": "OrdersP95Slow",    "severity": "warning",  "value": "... value=0.48058884809668656 ..."}
+```
+
+**The notification carries the number that tripped it** — 11.8% against a 5% threshold, 481ms against
+250ms — which is the difference between a page that tells you something and one that tells you to go
+look. And `OrdersP95Absurd` never appears: the pipeline delivers what fires and only what fires.
+
+### The other half: making it stop
+
+An alert that cannot resolve is a pager that never goes quiet. Stopping the load generator and
+driving fast-only traffic instead, so p95 falls through the threshold with data still flowing:
+
+```
+  p95=0.4634  OrdersP95Slow=firing
+  p95=0.4456  OrdersP95Slow=firing
+  p95=0.4134  OrdersP95Slow=firing
+  p95=0.2661  OrdersP95Slow=firing
+  p95=0.0961  OrdersP95Slow=inactive
+```
+
+```json
+{"status": "resolved", "alertname": "OrdersP95Slow", ...}
+```
+
+`OrdersErrorRatio` stayed firing throughout — errors were still being injected — so the resolution
+was specific to the rule whose condition changed rather than a global reset. **Driving the metric
+back down is worth doing once**, because `for:` and the notification policy's timers only reveal
+themselves on the way out.
+
 ## Verification checklist
 
 - [x] All three datasources appear with the hand-written uids `prom`, `loki`, `tempo`
@@ -523,6 +638,12 @@ streams — so the links depend on the uids and the labels, not on anything host
 - [x] A histogram exemplar carries a trace ID out of Prometheus via Grafana's proxy — 8 exemplars, 3 over 250ms
 - [x] The slowest exemplar's `0.355s` resolves in Tempo to a `handle_order` span of `355.2ms` — same request, both signals
 - [x] Prometheus stores **0** exemplars without `--enable-feature=exemplar-storage` and **8** with it — checked both ways
+- [x] Three alert rules and a contact point provision from `provisioning/alerting/`, all badged `Provisioned`
+- [x] The two real rules reach `firing`, and the **control rule on the identical query stays Normal** — so the threshold is doing the work
+- [x] A webhook receiver actually **receives** both, carrying the tripping values `0.1184` and `0.4806`
+- [x] The control rule is **never delivered** to the receiver
+- [x] Driving p95 from `0.463` to `0.096` resolves the rule and sends `"status": "resolved"`, while the unrelated rule keeps firing
+- [x] Editing or deleting a provisioned rule is refused `409` naming both provenances; `X-Disable-Provenance` does not override it
 - [x] `podman compose up -d` brings all seven containers up and **0 of 7** panels are empty, from files alone
 - [x] Prometheus scrapes `http://orders:8000/metrics` — the compose service name, not an IP
 - [x] The exemplar → trace → logs chain resolves across the container network, with the ID in **both** services' streams
@@ -595,6 +716,31 @@ Exemplar storage is still behind a feature flag, and its absence is indistinguis
 application that never emitted any. **Two silent layers stacked on each other** — a wrong exposition
 format and a missing flag — each producing the same empty result, which is why the checklist above
 records the with/without numbers rather than just the working one.
+
+**Alert provisioning uses provenance, and it is stricter than the dashboard's read-only flag.** The
+same experiment as the dashboard, run against a provisioned rule:
+
+```
+provenance: file
+
+DELETE -> 409  cannot delete with provided provenance 'classic-api-provisioning',
+               needs 'classic-file-provisioning'
+PUT    -> 409  cannot update with provided provenance 'api', needs 'file'
+```
+
+Every write path is tagged with where it came from, and a write whose provenance does not match the
+stored one is refused. `X-Disable-Provenance: true` does **not** override this — it is for creating
+rules that are exempt in the first place, and against a file-provisioned rule it just supplies a
+third mismatched provenance:
+
+```
+PUT + X-Disable-Provenance -> 409  cannot update with provided provenance '', needs 'file'
+```
+
+Worth contrasting with the dashboard above, which reported `canSave: true` and then failed with a
+bare `400 Cannot save provisioned dashboard`. **Alerting's error is the better one** — it names both
+provenances and the operation, so the fix is obvious. Two subsystems in the same product, two
+qualities of refusal.
 
 **`depends_on` waits for the container to start, not to be ready — and it costs a real request.**
 The first compose run logged this from the load generator:
@@ -694,8 +840,8 @@ level=error msg="can't read alerting provisioning files from directory" path=…
 ```
 
 Both are missing optional subdirectories of a provisioning tree that is otherwise working — the
-dashboard and all three datasources loaded from the same tree. Creating empty `plugins/` and
-`alerting/` directories silences them. Worth knowing before grepping the log for `error` after a
+dashboard and all three datasources loaded from the same tree. Creating the directories silences
+them; `alerting/` is filled in for real above. Worth knowing before grepping the log for `error` after a
 provisioning change and finding two that were always there.
 
 **The API says the provisioned dashboard is saveable, then refuses to save it.**
@@ -736,9 +882,10 @@ whole scheme fails silently: no error, no warning, just a `TraceID` field that n
 - [x] Emit Prometheus exemplars and close the metrics → traces hop — done above, marker clicked through to the trace, with both silent failure modes recorded
 - [x] Add a provisioned dashboard so the setup survives a fresh install as files rather than clicks — done above, three rows on one screen
 - [x] Test the Tempo → Logs direction from a span — done above; the link label says "trace" while the selector is per-span
+- [ ] Route an alert to something a human reads — email or Slack — since a webhook sink proves delivery but not the notifier most teams actually use
 - [ ] Replace `service.name`/`service`/`job` with one consistent name across all three signals and see how much of the `tags` translation disappears
 - [x] Put the whole thing in a compose file so the six processes start together rather than by hand — done above, plus a load generator
-- [ ] Provision an alert rule against the same p95 query and check it fires, since `provisioning/alerting/` is the directory Grafana already complains about
+- [x] Provision an alert rule against the same p95 query and check it fires — done above, with a control rule, a real receiver and a resolve
 - [ ] Re-bucket the histogram: the p95 panel sits at ~450ms against a slow path capped near 420ms, the same interpolation artefact measured in [[prometheus-instrument-and-query]]
 
 ## Related
