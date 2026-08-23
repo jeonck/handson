@@ -9,7 +9,7 @@ source: handson
 env: Grafana 13.2.0 · Prometheus 3.14.0 · Loki 3.7.6 (Homebrew) / 3.5.7 (image) · Tempo 2.9.1 · Podman 5.7.1 with docker-compose 5.3.1 · prometheus-client 0.26.0 · macOS 14.7.5
 verified: 2026-08-23
 verifiability: partial
-verifiability-note: Datasource provisioning, health, cross-datasource link configuration and both correlation hops — logs to traces and metrics to traces — were verified against running backends with real IDs resolved on both sides. All three links were clicked in the Grafana UI, the traces-to-logs selector was checked against two spans of one trace rather than one, the provisioned dashboard was verified by replaying every panel's stored query, and the alert rules were verified through a real webhook receiver including a resolve. Long-term storage, multi-tenancy and any real notifier (email, Slack, PagerDuty) are unexercised.
+verifiability-note: Datasource provisioning, health, cross-datasource link configuration and both correlation hops — logs to traces and metrics to traces — were verified against running backends with real IDs resolved on both sides. All three links were clicked in the Grafana UI, the traces-to-logs selector was checked against two spans of one trace rather than one, the provisioned dashboard was verified by replaying every panel's stored query, and the alert rules were verified through a real webhook receiver including a resolve. Slack routing was verified against a container implementing the incoming-webhook contract, not a real workspace, so message rendering in Slack itself is unproven. Long-term storage and multi-tenancy are unexercised.
 duration: 45–60 min
 risk: low
 ---
@@ -604,6 +604,105 @@ Two red, one green, all three badged `Provisioned`. What the sink received:
 250ms — which is the difference between a page that tells you something and one that tells you to go
 look. And `OrdersP95Absurd` never appears: the pipeline delivers what fires and only what fires.
 
+### Routing critical alerts to Slack
+
+A webhook sink proves delivery; Slack is where someone actually reads it. Grafana has a native
+`slack` receiver, and the routing tree decides which alerts reach it:
+
+```yaml title="provisioning/alerting/contactpoints.yml"
+contactPoints:
+  - orgId: 1
+    name: slack
+    receivers:
+      - uid: slack-1
+        type: slack
+        settings:
+          # The incoming-webhook URL IS the credential — anyone holding it can
+          # post to the channel. It comes from the environment, never the file.
+          url: $__env{SLACK_WEBHOOK_URL}
+          title: '{{ template "slack.title" . }}'
+          text: '{{ template "slack.text" . }}'
+
+policies:
+  - orgId: 1
+    receiver: webhook-sink          # the default: everything lands here
+    group_by: [alertname]
+    routes:
+      - receiver: slack             # …except critical, which pages
+        object_matchers:
+          - ['severity', '=', 'critical']
+```
+
+**`$__env{...}` works in alerting provisioning**, which is what keeps the webhook URL out of the
+file. Grafana then refuses to hand it back:
+
+```
+  slack          slack     url=[REDACTED]
+  webhook-sink   webhook   url=http://sink:8000/
+```
+
+The `slack` type is treated as holding a secret; the generic `webhook` type is not, and its URL is
+returned in clear. **If you route to Slack with `type: webhook` instead, the credential is readable
+from the API by anyone who can log in.**
+
+Everything here was verified against a container that speaks the incoming-webhook contract — accepts
+a JSON POST on `/services/...`, replies `ok` — rather than a real workspace. **The Slack endpoint
+itself is therefore unproven**; what is proven is everything Grafana does up to the HTTP request.
+Pointing it at a real channel is one variable:
+
+```bash
+export SLACK_WEBHOOK_URL='https://hooks.slack.com/services/<REDACTED>'
+podman compose up -d
+```
+
+### What Grafana actually sends
+
+The two receivers produce completely different bodies from the same alert engine:
+
+```json
+{
+  "username": "Grafana",
+  "attachments": [{
+    "title": "[FIRING] OrdersErrorRatio",
+    "title_link": "http://grafana.example.internal:3000/alerting/grafana/orders-error-ratio/view?orgId=1",
+    "text": "\n*5xx ratio over 5%*\nseverity: `critical`\nvalue: [ var='A' ... value=0.15280221141545375 ], ...",
+    "fallback": "[FIRING] OrdersErrorRatio",
+    "footer": "Grafana v13.2.0",
+    "color": "#D63232",
+    "ts": 1787511971
+  }]
+}
+```
+
+`title` and `text` are the custom templates; `color` is Grafana's, and it is the state:
+
+| State | Colour |
+|---|---|
+| `[FIRING]` | `#D63232` |
+| `[RESOLVED]` | `#36a64f` |
+
+Meanwhile the same firing batch sent the *warning* alert to the other receiver as a flat object,
+because the routing tree split them by label — `OrdersErrorRatio` (critical) went only to Slack and
+`OrdersP95Slow` (warning) only to the sink.
+
+**Every link in a notification is built from `root_url`, and the default is wrong in a container.**
+Before setting it:
+
+```
+"title_link": "http://localhost:3000/alerting/grafana/orders-error-ratio/view?orgId=1"
+```
+
+`localhost` is the Grafana container, so the link is dead for every human who clicks it. One
+variable fixes all of them:
+
+```yaml
+GF_SERVER_ROOT_URL: ${GRAFANA_ROOT_URL:-http://grafana.example.internal:3000}
+```
+
+```
+"title_link": "http://grafana.example.internal:3000/alerting/grafana/orders-error-ratio/view?orgId=1"
+```
+
 ### The other half: making it stop
 
 An alert that cannot resolve is a pager that never goes quiet. Stopping the load generator and
@@ -638,6 +737,12 @@ themselves on the way out.
 - [x] A histogram exemplar carries a trace ID out of Prometheus via Grafana's proxy — 8 exemplars, 3 over 250ms
 - [x] The slowest exemplar's `0.355s` resolves in Tempo to a `handle_order` span of `355.2ms` — same request, both signals
 - [x] Prometheus stores **0** exemplars without `--enable-feature=exemplar-storage` and **8** with it — checked both ways
+- [x] A `severity=critical` route sends `OrdersErrorRatio` to the Slack receiver while `OrdersP95Slow` goes only to the default sink — one firing batch, two destinations
+- [x] `$__env{SLACK_WEBHOOK_URL}` resolves, proven by the mock receiving the POST — the URL is never in the file
+- [x] Grafana returns the Slack URL as `[REDACTED]` while returning the plain webhook's in clear
+- [x] The Slack body is a real `attachments` payload with the custom `title`/`text` templates and state colours `#D63232` / `#36a64f`
+- [x] `GF_SERVER_ROOT_URL` changes `title_link` from the useless `localhost:3000` to a reachable host — both values observed
+- [x] A threshold edit is ignored by `compose up -d` and applied by `compose restart` — checked both ways
 - [x] Three alert rules and a contact point provision from `provisioning/alerting/`, all badged `Provisioned`
 - [x] The two real rules reach `firing`, and the **control rule on the identical query stays Normal** — so the threshold is doing the work
 - [x] A webhook receiver actually **receives** both, carrying the tripping values `0.1184` and `0.4806`
@@ -716,6 +821,43 @@ Exemplar storage is still behind a feature flag, and its absence is indistinguis
 application that never emitted any. **Two silent layers stacked on each other** — a wrong exposition
 format and a missing flag — each producing the same empty result, which is why the checklist above
 records the with/without numbers rather than just the working one.
+
+**Editing a provisioned alert rule appeared to do nothing, and the reason was compose.** Changing a
+threshold in `rules.yml` and running `podman compose up -d grafana` left Grafana holding the old
+value:
+
+```
+file:    evaluator: {type: gt, params: [0.95]}
+grafana: evaluator params: [0.05]
+```
+
+`up -d` recreates a container when the *service definition* changes. Editing a file that is
+bind-mounted into it is not a definition change, so compose reports nothing to do and the container
+keeps running with the old config loaded. `podman compose restart grafana` applied it immediately:
+
+```
+grafana: evaluator params: [0.95]
+```
+
+**This is not symmetrical with dashboards.** Grafana polls the dashboard directory and reloads JSON
+from disk on its own — verified earlier, no restart needed. Alert rules are read into the database
+at start-up only. Two provisioning subsystems in one tree, two reload models, and the compose
+behaviour on top makes a no-op look like a config that did not take.
+
+**Restarting Grafana re-notifies everything that is firing, and `repeat_interval` does not stop it.**
+Over this run the error ratio never fell below the 5% threshold — the five-minute ratio sat at 10–15%
+throughout — yet the Slack receiver logged **six** payloads with `repeat_interval: 4h` configured,
+including `[RESOLVED]` messages for a condition that stayed true:
+
+```
+[FIRING]    [RESOLVED]    [FIRING]    [FIRING]    [FIRING]    [RESOLVED]
+```
+
+Only one of those resolves is explained by the metric — the window where the threshold was
+deliberately raised. The rest is restart churn: **alert state does not survive a Grafana restart**,
+so on the way back up every firing alert is a new alert. Combined with the finding above, this has a
+sharp consequence: **editing any alert rule requires a restart, and that restart pages everyone
+currently firing.** Batch rule changes, and make them during a quiet window rather than mid-incident.
 
 **Alert provisioning uses provenance, and it is stricter than the dashboard's read-only flag.** The
 same experiment as the dashboard, run against a provisioned rule:
@@ -882,7 +1024,8 @@ whole scheme fails silently: no error, no warning, just a `TraceID` field that n
 - [x] Emit Prometheus exemplars and close the metrics → traces hop — done above, marker clicked through to the trace, with both silent failure modes recorded
 - [x] Add a provisioned dashboard so the setup survives a fresh install as files rather than clicks — done above, three rows on one screen
 - [x] Test the Tempo → Logs direction from a span — done above; the link label says "trace" while the selector is per-span
-- [ ] Route an alert to something a human reads — email or Slack — since a webhook sink proves delivery but not the notifier most teams actually use
+- [x] Route an alert to something a human reads — done above with the native Slack receiver, verified against a mock endpoint
+- [ ] Point `SLACK_WEBHOOK_URL` at a real workspace and confirm the message renders as intended — the one part a mock cannot settle
 - [ ] Replace `service.name`/`service`/`job` with one consistent name across all three signals and see how much of the `tags` translation disappears
 - [x] Put the whole thing in a compose file so the six processes start together rather than by hand — done above, plus a load generator
 - [x] Provision an alert rule against the same p95 query and check it fires — done above, with a control rule, a real receiver and a resolve
