@@ -2,14 +2,14 @@
 title: OpenSearch — a single node, and the range query that quietly lies
 date: 2026-08-23
 domain: install
-tags: [search, logs, indexing, containers]
+tags: [search, logs, indexing, retention, containers]
 stack: [opensearch, opensearch-dashboards, podman, docker-compose]
-summary: A single-node OpenSearch 3.8 with security on, brought up from a compose file, then interrogated about its own guesses. Dynamic mapping typed a quoted "412" as text, and duration_ms >= 200 then returned a document whose value was 87 — no error, just string comparison. An index template fixes it, and does nothing to the index that already exists.
+summary: A single-node OpenSearch 3.8 with security on, interrogated about its own guesses. Dynamic mapping typed a quoted "412" as text, and duration_ms >= 200 then returned a document whose value was 87 — no error, just string comparison. An index template fixes it and does nothing to the index that already exists, and an ISM policy then rolls that index over and deletes it while writers keep addressing one alias.
 source: handson
 env: OpenSearch 3.8.0 (Lucene 10.5.0) · OpenSearch Dashboards 3.8.0 · Podman 5.7.1 with docker-compose 5.3.1 · macOS 14.7.5
 verified: 2026-08-23
 verifiability: partial
-verifiability-note: Verified on a single node with the demo TLS certificates and the built-in admin user. Multi-node allocation, real certificates, role-based access for anyone other than admin, snapshots, and ISM rollover across a retention period are all unexercised — and cluster behaviour under node loss is the thing a single node structurally cannot show.
+verifiability-note: Verified on a single node with the demo TLS certificates and the built-in admin user. ISM rollover and deletion were exercised end to end, but with a lab-sized 3-minute retention and a tightened scheduler rather than a real one measured in days. Multi-node allocation, real certificates, role-based access for anyone other than admin, and snapshots are unexercised — and cluster behaviour under node loss is the thing a single node structurally cannot show.
 duration: 40–60 min
 risk: low
 ---
@@ -264,6 +264,116 @@ Aggregations that needed a subfield now work on the field itself:
   orders      n=2  avg=249.5ms  p95=412.0ms
 ```
 
+## Rollover and retention with ISM
+
+A mapping decides whether a query is correct; **ISM decides whether the index still exists.** Index
+State Management is a policy attached to indices, with states, actions and timed transitions.
+
+```json title="applogs-ism.json"
+{
+  "policy": {
+    "description": "applogs: roll over on size/age/docs, keep 3 minutes, then delete",
+    "default_state": "hot",
+    "ism_template": [
+      { "index_patterns": ["applogs-*"], "priority": 100 }
+    ],
+    "states": [
+      {
+        "name": "hot",
+        "actions": [
+          {
+            "rollover": {
+              "min_doc_count": 5,
+              "min_index_age": "30m",
+              "min_primary_shard_size": "10gb"
+            }
+          }
+        ],
+        "transitions": [
+          { "state_name": "delete", "conditions": { "min_index_age": "3m" } }
+        ]
+      },
+      { "name": "delete", "actions": [ { "delete": {} } ], "transitions": [] }
+    ]
+  }
+}
+```
+
+```bash
+curl -sk -u "admin:$OPENSEARCH_ADMIN_PASSWORD" \
+  -X PUT "https://127.0.0.1:9200/_plugins/_ism/policies/applogs-retention" -d @applogs-ism.json
+```
+
+Three things in that policy do the work:
+
+- **`ism_template`** attaches the policy to any index matching `applogs-*` **at creation**. Without
+  it you attach policies by hand to every new index, which defeats rollover.
+- **The `rollover` conditions are an OR.** Whichever of docs, age or shard size trips first rolls the
+  index. Real policies use size and age; `min_doc_count: 5` is here so a lab finishes.
+- **`min_index_age` in the transition is measured from index creation**, not from the rollover. Three
+  minutes is absurd and deliberate — a real policy says `30d`.
+
+The index template needs one more setting, and the index needs a write alias:
+
+```json
+"settings": {
+  "plugins.index_state_management.rollover_alias": "applogs"
+}
+```
+
+```bash
+curl -sk -u "admin:$OPENSEARCH_ADMIN_PASSWORD" \
+  -X PUT "https://127.0.0.1:9200/applogs-000001" \
+  -d '{"aliases": {"applogs": {"is_write_index": true}}}'
+```
+
+**The `-000001` suffix is not decoration.** Rollover increments the numeric suffix, so the bootstrap
+index has to have one. Applications then write to `applogs` and never learn the real index name.
+
+### Watching it happen
+
+With the scheduler tightened (see below), polling `_ism/explain`:
+
+```
+t+  0s  applogs-000001[hot/None]      Successfully initialized policy: applogs-retention
+t+ 40s  applogs-000001[hot/rollover]  Successfully rolled over index [index=applogs-000001]
+        applogs-000002[None/None]
+t+100s  applogs-000001[None/None]     Transitioning to delete [index=applogs-000001]
+        applogs-000002[hot/None]      Successfully initialized policy: applogs-retention
+t+160s  applogs-000002[hot/rollover]  Pending rollover of index [index=applogs-000002]
+```
+
+`applogs-000001` is simply absent by `t+160s`. It was deleted, with its six documents:
+
+```
+  index          docs.count health
+  applogs-000002          0 green
+```
+
+**Pass condition: the index is gone, not merely marked.** A retention policy that transitions to a
+`delete` state without the index disappearing is a policy that has done nothing, and the state name
+alone will not tell you.
+
+The alias moved with it, which is the point of the whole arrangement:
+
+```
+  alias   index          is_write_index
+  applogs applogs-000002 true
+```
+
+```bash
+curl -sk -u "admin:$OPENSEARCH_ADMIN_PASSWORD" \
+  -X POST "https://127.0.0.1:9200/applogs/_doc?refresh=true" -d '{...}'
+```
+
+```
+  landed in: applogs-000002 | result: created
+```
+
+**The writer never changed its target and never knew a rollover happened.** That is the property
+worth checking explicitly — an alias that does not follow the rollover is the failure this design
+exists to prevent, and it looks identical until someone queries for yesterday's data.
+
 ## Verification checklist
 
 - [x] A weak `OPENSEARCH_INITIAL_ADMIN_PASSWORD` **fails the container**, exit `1`, with the regex rule named
@@ -278,6 +388,12 @@ Aggregations that needed a subfield now work on the field itself:
 - [x] `_reindex` coerces `"412"` to `412` with `failures: 0`
 - [x] `dynamic: strict` rejects a typo'd field with `400`; the dynamic index accepts it and keeps it
 - [x] Dashboards reports `overall: green` — and `401` without credentials
+- [x] An `ism_template` attaches the policy at index creation, with no per-index step
+- [x] Rollover fires on `min_doc_count` and creates `applogs-000002`
+- [x] The write alias **follows** the rollover, and a document written to `applogs` afterwards lands in `-000002`
+- [x] The retention transition **deletes the index** — `applogs-000001` is absent from `_cat/indices`, not just marked
+- [x] An index with a rollover action and no `rollover_alias` reports `Missing rollover_alias index setting` and stays stuck in `hot`
+- [x] `coordinator.sweep_period` below `5m` is rejected, and the rejection discards the whole settings update
 
 ## Rollback
 
@@ -301,6 +417,68 @@ curl -sk -u "admin:$OPENSEARCH_ADMIN_PASSWORD" -X DELETE "https://127.0.0.1:9200
 ```
 
 ## Where this bit us
+
+**ISM is slow by default, and nothing about that is obvious.** Reading the shipped values rather
+than assuming them:
+
+```
+  plugins.index_state_management.job_interval             = 5      (minutes)
+  plugins.index_state_management.jitter                   = 0.6
+  plugins.index_state_management.coordinator.sweep_period = 10m
+```
+
+A newly created index waits up to **10 minutes** to be picked up, then its job runs every **5
+minutes**, and `jitter: 0.6` adds up to 60% randomly on top. **A condition met now can take a
+quarter of an hour to act**, which is correct for a cluster with thousands of indices and
+maddening when you are testing a policy and concluding it is broken. For a lab:
+
+```json
+{
+  "persistent": {
+    "plugins.index_state_management.job_interval": 1,
+    "plugins.index_state_management.jitter": 0.0,
+    "plugins.index_state_management.coordinator.sweep_period": "5m"
+  }
+}
+```
+
+**`sweep_period` has a floor, and the rejection takes the whole request with it.** Asking for `1m`:
+
+```
+failed to parse value [1m] for setting [plugins.index_state_management.coordinator.sweep_period],
+must be >= [5m]
+```
+
+```
+  acknowledged: None
+  persistent: {}
+```
+
+The cluster settings API is **atomic** — one invalid value and none of the other settings in the same
+body are applied. The `400` is clear if you read it, and the trap is a script that fires the update,
+ignores the response, and proceeds believing `job_interval` is now 1.
+
+**A rollover action with no `rollover_alias` fails quietly and the index sits in `hot` forever.**
+Running the identical policy against an index created without that setting:
+
+```
+  state:  hot
+  action: rollover | failed: None
+  message: Missing rollover_alias index setting [index=badlogs-000001]
+```
+
+Note `failed: None` — ISM does not consider this a terminal failure, it just keeps retrying, so the
+index accumulates documents indefinitely while a policy is attached and apparently healthy. **The
+managed-index list is not the check; `_ism/explain` and its `info.message` are.** The setting has to
+be on the index, which in practice means in the index template, which means it has to exist before
+the first index is created.
+
+**Everything above uses `min_index_age: "3m"`, measured from index creation.** That is the correct
+knob and a lab-sized value. Two consequences worth internalising before copying this policy: the
+clock starts when the index is *created*, not when it is rolled over, so a long-lived hot index eats
+its own retention window; and a `delete` state does exactly what it says with no snapshot and no
+undo. **Test a retention policy against indices you are willing to lose**, which is what this page
+did — the six documents in `applogs-000001` are gone and were meant to be.
 
 **A range query on a `text` field compares strings, returns no error, and is wrong.** Running four
 thresholds against the dynamically-mapped index, next to Python's comparison of the same values as
@@ -421,8 +599,8 @@ data is missing**, and getting used to ignoring it in a lab is how it gets ignor
 
 ## Follow-ups
 
-- [ ] Add an ISM policy with rollover and a delete phase, then age an index through it — the retention half this page sets up with `applogs-000001` and never uses
-- [ ] Put a write alias in front of the index so the reindex-and-swap above is transparent to writers
+- [ ] Work out why `.opendistro-ism-managed-index-history-*` stayed empty while `_ism/explain` showed every transition — the audit trail is the part an operator would want after the fact
+- [ ] Add a `warm` state with `read_only` and `force_merge` between hot and delete, which is where the storage saving actually is
 - [ ] Replace the demo certificates and drop `-k`, which is the first real step toward anything non-lab
 - [ ] Create a non-admin role that can read `applogs-*` and nothing else, and confirm it is refused elsewhere
 - [ ] Ship the logs from [[loki-logs-labels-and-cardinality]] into this index and compare what each system makes cheap — labels versus mappings is the same decision made twice
