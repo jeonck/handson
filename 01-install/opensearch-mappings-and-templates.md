@@ -9,7 +9,7 @@ source: handson
 env: OpenSearch 3.8.0 (Lucene 10.5.0) · OpenSearch Dashboards 3.8.0 · Podman 5.7.1 with docker-compose 5.3.1 · macOS 14.7.5
 verified: 2026-08-23
 verifiability: partial
-verifiability-note: Verified on a single node with the demo TLS certificates and the built-in admin user. ISM rollover and deletion were exercised end to end, but with a lab-sized 3-minute retention and a tightened scheduler rather than a real one measured in days. Multi-node allocation, real certificates, role-based access for anyone other than admin, and snapshots are unexercised — and cluster behaviour under node loss is the thing a single node structurally cannot show.
+verifiability-note: Verified on a single node with the demo TLS certificates and the built-in admin user. The full ISM lifecycle — rollover, a warm state with read_only/force_merge/index_priority, and deletion — was exercised end to end, but with lab-sized minute-scale transitions and a tightened scheduler rather than a real policy measured in days. The warm tier's allocation half needs more than one node. Multi-node allocation, real certificates, role-based access for anyone other than admin, and snapshots are unexercised — and cluster behaviour under node loss is the thing a single node structurally cannot show.
 duration: 40–60 min
 risk: low
 ---
@@ -272,7 +272,7 @@ State Management is a policy attached to indices, with states, actions and timed
 ```json title="applogs-ism.json"
 {
   "policy": {
-    "description": "applogs: roll over on size/age/docs, keep 3 minutes, then delete",
+    "description": "applogs: hot -> warm (read_only + force_merge) -> delete",
     "default_state": "hot",
     "ism_template": [
       { "index_patterns": ["applogs-*"], "priority": 100 }
@@ -290,7 +290,18 @@ State Management is a policy attached to indices, with states, actions and timed
           }
         ],
         "transitions": [
-          { "state_name": "delete", "conditions": { "min_index_age": "3m" } }
+          { "state_name": "warm", "conditions": { "min_index_age": "2m" } }
+        ]
+      },
+      {
+        "name": "warm",
+        "actions": [
+          { "read_only": {} },
+          { "force_merge": { "max_num_segments": 1 } },
+          { "index_priority": { "priority": 50 } }
+        ],
+        "transitions": [
+          { "state_name": "delete", "conditions": { "min_index_age": "7m" } }
         ]
       },
       { "name": "delete", "actions": [ { "delete": {} } ], "transitions": [] }
@@ -310,8 +321,12 @@ Three things in that policy do the work:
   it you attach policies by hand to every new index, which defeats rollover.
 - **The `rollover` conditions are an OR.** Whichever of docs, age or shard size trips first rolls the
   index. Real policies use size and age; `min_doc_count: 5` is here so a lab finishes.
-- **`min_index_age` in the transition is measured from index creation**, not from the rollover. Three
-  minutes is absurd and deliberate — a real policy says `30d`.
+- **`min_index_age` in the transitions is measured from index creation**, not from the rollover.
+  Two and seven minutes are absurd and deliberate — a real policy says `2d` and `30d`.
+
+**The `warm` state is where an index stops being written and starts being cheap.** Its three actions
+run in order and each is separately verifiable: `read_only` blocks writes, `force_merge` collapses
+segments, and `index_priority` demotes the index so a cluster restart recovers today's data first.
 
 The index template needs one more setting, and the index needs a write alias:
 
@@ -335,13 +350,19 @@ index has to have one. Applications then write to `applogs` and never learn the 
 With the scheduler tightened (see below), polling `_ism/explain`:
 
 ```
-t+  0s  applogs-000001[hot/None]      Successfully initialized policy: applogs-retention
-t+ 40s  applogs-000001[hot/rollover]  Successfully rolled over index [index=applogs-000001]
-        applogs-000002[None/None]
-t+100s  applogs-000001[None/None]     Transitioning to delete [index=applogs-000001]
-        applogs-000002[hot/None]      Successfully initialized policy: applogs-retention
-t+160s  applogs-000002[hot/rollover]  Pending rollover of index [index=applogs-000002]
+t+ 40s  applogs-000001[hot/None]           Successfully initialized policy: applogs-retention
+t+100s  applogs-000001[hot/rollover]       Successfully rolled over index   -> applogs-000002 created
+t+140s  applogs-000001[None/None]          Transitioning to warm [index=applogs-000001]
+t+200s  applogs-000001[warm/read_only]     Successfully set index to read-only    blocks.write=true
+t+240s  applogs-000001[warm/force_merge]   Successfully completed force merge     segments 8 -> 1
+t+340s  applogs-000001[warm/force_merge]   Successfully confirmed segments force merged
+t+400s  applogs-000001[warm/index_priority] Successfully set index priority to 50  priority=50
+t+460s  applogs-000001[None/None]          Transitioning to delete [index=applogs-000001]
 ```
+
+**`force_merge` reports twice** — `Successfully completed force merge`, then
+`Successfully confirmed segments force merged`. ISM re-checks the segment count afterwards rather
+than trusting the merge call, which is worth copying as a habit.
 
 `applogs-000001` is simply absent by `t+160s`. It was deleted, with its six documents:
 
@@ -349,6 +370,34 @@ t+160s  applogs-000002[hot/rollover]  Pending rollover of index [index=applogs-0
   index          docs.count health
   applogs-000002          0 green
 ```
+
+### What `warm` actually did
+
+Each of the three actions leaves something you can test. `read_only` is the one with teeth:
+
+```bash
+curl -sk -u "admin:$OPENSEARCH_ADMIN_PASSWORD" \
+  -X POST "https://127.0.0.1:9200/applogs-000001/_doc?refresh=true" -d '{...}'
+```
+
+```
+  status: 403
+  type:   cluster_block_exception
+  reason: index [applogs-000001] blocked by: [FORBIDDEN/8/index write (api)];
+```
+
+While the same write through the alias is untouched, because the alias points at the hot index:
+
+```
+  landed in: applogs-000002 | result: created
+```
+
+```
+  docs readable: 8
+```
+
+**Reads still work.** That is the whole proposition of a warm tier: the data stays queryable and
+stops being mutable, which lets the segments be merged once and left alone.
 
 **Pass condition: the index is gone, not merely marked.** A retention policy that transitions to a
 `delete` state without the index disappearing is a policy that has done nothing, and the state name
@@ -391,6 +440,12 @@ exists to prevent, and it looks identical until someone queries for yesterday's 
 - [x] An `ism_template` attaches the policy at index creation, with no per-index step
 - [x] Rollover fires on `min_doc_count` and creates `applogs-000002`
 - [x] The write alias **follows** the rollover, and a document written to `applogs` afterwards lands in `-000002`
+- [x] `read_only` in the warm state makes a direct write fail `403 cluster_block_exception`, while the alias keeps accepting writes
+- [x] The warm index stays **readable** — 8 documents still counted after it went read-only
+- [x] `force_merge` takes the index from **8 segments to 1**, and ISM re-confirms the count afterwards
+- [x] `index_priority` is applied and readable as `index.priority = 50`
+- [x] A merge to one segment leaves `docs.deleted` non-zero — soft deletes are retained for the 12h lease
+- [x] Store size after a merge is **unchanged when read immediately** and 58% lower a minute later, so the check needs a settling period
 - [x] The retention transition **deletes the index** — `applogs-000001` is absent from `_cat/indices`, not just marked
 - [x] An index with a rollover action and no `rollover_alias` reports `Missing rollover_alias index setting` and stays stuck in `hot`
 - [x] `coordinator.sweep_period` below `5m` is rejected, and the rejection discards the whole settings update
@@ -417,6 +472,49 @@ curl -sk -u "admin:$OPENSEARCH_ADMIN_PASSWORD" -X DELETE "https://127.0.0.1:9200
 ```
 
 ## Where this bit us
+
+**`force_merge` reclaims less than you expect, and `_stats/store` will lie to you while you check.**
+Measured directly on a throwaway index, 200 documents each written with `refresh=true`, then merged
+to one segment. The first reading, five seconds after the merge:
+
+```
+  before: segments=10  store=82217 bytes
+  after:  segments=1   store=82217 bytes      <- identical, and wrong
+```
+
+**Store statistics lag well behind the merge.** Re-read a minute later the same index was `34746`
+bytes — a 58% reduction that the first measurement completely missed. Any before/after storage claim
+needs a settling period and a repeated read, or it is noise. The segment *count* updates promptly;
+the byte count does not.
+
+Then the part that surprised us. Deleting 120 of the 200 documents and force-merging again:
+
+```
+  after deletes, before merge:  segments=2  store=47684b  docs=80  deleted=120
+  after force_merge:            segments=1  store=13300b  docs=80  deleted=120
+```
+
+Storage fell by 72% — and **`docs.deleted` stayed at 120**, in a segment that had just been rewritten:
+
+```
+  index      shard segment docs.count docs.deleted   size
+  merge-demo 0     _65             80          120   12.6kb
+```
+
+The reason is a default nobody sets:
+
+```
+  index.soft_deletes.enabled              = true
+  index.soft_deletes.retention_lease.period = 12h
+```
+
+Deletes in OpenSearch are **soft** — the document's content goes, but a tombstone is retained so a
+replica can catch up by replaying history rather than copying the whole shard. Those tombstones are
+held for the retention-lease period, twelve hours by default, and `force_merge` will not drop them
+early. So the common advice that "force merge reclaims space from deleted documents" is right about
+the content and wrong about the timing: **the space comes back at the merge, the `docs.deleted`
+count does not go to zero until the lease lets it.** Do not use `docs.deleted` as the check that a
+merge worked; use the segment count and, patiently, the store size.
 
 **ISM is slow by default, and nothing about that is obvious.** Reading the shipped values rather
 than assuming them:
@@ -473,12 +571,13 @@ managed-index list is not the check; `_ism/explain` and its `info.message` are.*
 be on the index, which in practice means in the index template, which means it has to exist before
 the first index is created.
 
-**Everything above uses `min_index_age: "3m"`, measured from index creation.** That is the correct
-knob and a lab-sized value. Two consequences worth internalising before copying this policy: the
-clock starts when the index is *created*, not when it is rolled over, so a long-lived hot index eats
-its own retention window; and a `delete` state does exactly what it says with no snapshot and no
-undo. **Test a retention policy against indices you are willing to lose**, which is what this page
-did — the six documents in `applogs-000001` are gone and were meant to be.
+**Every transition above uses `min_index_age`, measured from index creation** — not from the
+rollover, and not from the previous transition. Two consequences worth internalising before copying
+this policy: a long-lived hot index eats its own retention window, because the clock started when it
+was created rather than when it stopped being written; and a `delete` state does exactly what it
+says, with no snapshot and no undo. **Test a retention policy against indices you are willing to
+lose**, which is what this page did — the eight documents in `applogs-000001` are gone and were
+meant to be.
 
 **A range query on a `text` field compares strings, returns no error, and is wrong.** Running four
 thresholds against the dynamically-mapped index, next to Python's comparison of the same values as
@@ -600,7 +699,8 @@ data is missing**, and getting used to ignoring it in a lab is how it gets ignor
 ## Follow-ups
 
 - [ ] Work out why `.opendistro-ism-managed-index-history-*` stayed empty while `_ism/explain` showed every transition — the audit trail is the part an operator would want after the fact
-- [ ] Add a `warm` state with `read_only` and `force_merge` between hot and delete, which is where the storage saving actually is
+- [ ] Add an `allocation` action moving warm indices onto dedicated nodes by attribute — the half of a warm tier a single node structurally cannot show
+- [ ] Wait out `soft_deletes.retention_lease.period` (or lower it) and confirm `docs.deleted` finally drops to zero
 - [ ] Replace the demo certificates and drop `-k`, which is the first real step toward anything non-lab
 - [ ] Create a non-admin role that can read `applogs-*` and nothing else, and confirm it is refused elsewhere
 - [ ] Ship the logs from [[loki-logs-labels-and-cardinality]] into this index and compare what each system makes cheap — labels versus mappings is the same decision made twice
