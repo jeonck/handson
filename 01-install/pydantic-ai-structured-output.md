@@ -9,7 +9,7 @@ source: handson
 env: pydantic-ai 2.33.0 · pydantic 2.13.4 · google-genai 2.19.0 · python-dotenv 1.2.3 · Python 3.13.0 on macOS 14.7.5 · Gemini via GEMINI_API_KEY
 verified: 2026-08-21
 verifiability: partial
-verifiability-note: Verified against Gemini only, the one provider with a key on this machine — the model-string form for other providers is unexercised. Validator-driven retries and retry exhaustion were both observed live, as were the notebook's run_sync failure and its top-level-await fix. The shipped notebook has NOT been run top to bottom in one pass and ships with empty output cells: the Gemini free-tier quota ran out during verification. A retry triggered by Pydantic schema validation itself was never reproduced either. Tools, dependencies, streaming and multi-agent graphs are untouched.
+verifiability-note: Verified against Gemini only, the one provider with a key on this machine — the model-string form for other providers is unexercised. Validator-driven retries and retry exhaustion were both observed live. The shipped notebook has now been executed top to bottom and carries its outputs, but on gemini-flash-lite-latest rather than the gemini-3.6-flash used in the rest of the page, because that model's daily quota was exhausted. A retry triggered by Pydantic schema validation itself was never reproduced. Tools, dependencies, streaming and multi-agent graphs are untouched.
 duration: 25–35 min
 risk: low
 ---
@@ -261,11 +261,11 @@ same agent, the failing `run_sync` cell kept in deliberately so the error is met
 rather than in the middle of real work, plus an `instructions=` line so the model answers the
 question instead of asking for the schema. It needs a `.env` beside it.
 
-> ⚠️ **The notebook ships with empty output cells.** Its individual behaviours were verified in a
-> real kernel — the two blocks above are that kernel's output — but the notebook as a single
-> top-to-bottom run has not completed on two separate days. The free tier allows **20 requests per
-> day** for this model, and a run needs four of them behind whatever else has already spent the
-> allowance. See [Where this bit us](#where-this-bit-us).
+> **The notebook ships executed** — all five code cells carry their real outputs, including the
+> deliberate `run_sync` failure and a validator retry reading `attempt 1: NO LIMIT` then
+> `attempt 2: LIMIT`. It runs on `google:gemini-flash-lite-latest` rather than the
+> `gemini-3.6-flash` used elsewhere on this page, because that model's daily quota was spent — the
+> limit is per model, which is covered in [[dspy-prompt-optimization]].
 
 ## Verification checklist
 
@@ -278,7 +278,7 @@ question instead of asking for the schema. It needs a `.env` beside it.
 - [ ] A retry driven by Pydantic schema validation alone — **never reproduced**, see below
 - [x] `run_sync()` in a Jupyter kernel raises `RuntimeError: This event loop is already running`
 - [x] `await agent.run(...)` works in the same kernel and returns a `DatabaseQuery`
-- [ ] The shipped notebook executed top to bottom in one run — **attempted twice on separate days, blocked on the free-tier quota both times**
+- [x] The shipped notebook executed top to bottom in one run, with all five code cells carrying outputs
 
 ## Rollback
 
