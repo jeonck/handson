@@ -9,15 +9,15 @@ source: handson
 env: Grafana 13.2.0 · Prometheus 3.14.0 · Loki 3.7.6 · Tempo (grafana/tempo:latest under Podman 5.7.1) · prometheus-client 0.26.0 · macOS 14.7.5
 verified: 2026-08-23
 verifiability: partial
-verifiability-note: Datasource provisioning, health, cross-datasource link configuration and both correlation hops — logs to traces and metrics to traces — were verified against running backends with real IDs resolved on both sides. The derived-field link was confirmed rendering in the Grafana UI; the exemplar hop was verified through Grafana's proxy API rather than by clicking a chart marker. No dashboards, alerting or long-term storage.
+verifiability-note: Datasource provisioning, health, cross-datasource link configuration and both correlation hops — logs to traces and metrics to traces — were verified against running backends with real IDs resolved on both sides. Both links were also confirmed in the Grafana UI — the derived field on a log row, and an exemplar marker clicked through to its trace. No dashboards, alerting or long-term storage.
 duration: 45–60 min
 risk: low
 ---
 
 > **Verified 2026-08-23.** Two real IDs were walked end to end: one fetched from Tempo and found in
 > a Loki log line, and one carried out of a Prometheus histogram bucket by an exemplar and resolved
-> back to a 355ms trace — both through Grafana's datasource proxy. The screenshot below is the link
-> Grafana rendered from the first.
+> back to its trace — both through Grafana's datasource proxy, and both then clicked in the UI. The
+> two screenshots below are what Grafana rendered.
 
 [[prometheus-instrument-and-query]], [[opentelemetry-tracing-two-services]] and
 [[loki-logs-labels-and-cardinality]] each end at the same place: the signal is useful, and getting
@@ -276,6 +276,34 @@ trace e41e4639d1b5a4ebf04502083725ab57
 the metric, `355.2ms` from the trace, one 32-character ID linking them. That is the hop the other two
 labs could not make — a percentile pointing at the individual request underneath it.
 
+### The marker, clicked
+
+The API proves the data exists; the diamond on the chart is what an on-call engineer actually uses.
+With `Exemplars: true` on the query, hovering one gives:
+
+<img src="/01-install/img/grafana-exemplar-marker-tooltip.png" width="620" alt="Grafana Explore showing a p95 line with diamond exemplar markers, and a hover tooltip listing Value 0.443, le 0.5, trace_id 51644ed23cf67230ff9640a6fe6d88e2, and a Query with Tempo link">
+
+The tooltip is the exemplar's contents laid out: the observed `Value` of **0.443**, the bucket it
+landed in (`le: 0.5`), the scrape target it came from, and the `trace_id`. **`Query with Tempo` is
+the link `exemplarTraceIdDestinations` generates** — the `name: trace_id` in that config is what
+tells Grafana which label holds the ID.
+
+Clicking it splits the pane and resolves the trace:
+
+<img src="/01-install/img/grafana-exemplar-to-tempo-trace.png" width="620" alt="Grafana Explore split view with the Prometheus query on the left and a Tempo trace on the right, showing orders: handle_order, trace ID 51644ed23cf67230ff9640a6fe6d88e2 and Duration 443.45ms">
+
+```
+orders: handle_order
+Trace ID  51644ed23cf67230ff9640a6fe6d88e2
+Duration  443.45ms          Services 1
+```
+
+**`0.443` on the metric, `443.45ms` on the trace.** The histogram bucket that number fell into was
+`le="0.5"` — a bucket 250ms wide, which is all the metric could ever have told you. The exemplar
+carried the exact duration and the identity of the request out of that bucket, and two clicks later
+the span is on screen. **This is the one thing a histogram cannot do on its own**, and the reason
+[[prometheus-instrument-and-query]]'s interpolated p95 was a dead end for finding a specific request.
+
 ## Verification checklist
 
 - [x] All three datasources appear with the hand-written uids `prom`, `loki`, `tempo`
@@ -288,6 +316,8 @@ labs could not make — a percentile pointing at the individual request undernea
 - [x] A histogram exemplar carries a trace ID out of Prometheus via Grafana's proxy — 8 exemplars, 3 over 250ms
 - [x] The slowest exemplar's `0.355s` resolves in Tempo to a `handle_order` span of `355.2ms` — same request, both signals
 - [x] Prometheus stores **0** exemplars without `--enable-feature=exemplar-storage` and **8** with it — checked both ways
+- [x] Grafana renders exemplar markers on the p95 chart, and the tooltip carries `trace_id` plus a `Query with Tempo` link
+- [x] Clicking that link opens the trace — the tooltip's `0.443` and the trace's `443.45ms` are the same request
 
 ## Rollback
 
@@ -347,8 +377,7 @@ whole scheme fails silently: no error, no warning, just a `TraceID` field that n
 
 ## Follow-ups
 
-- [x] Emit Prometheus exemplars and close the metrics → traces hop — done above, with both silent failure modes recorded
-- [ ] Click the exemplar marker in a Grafana chart and confirm the Tempo link renders, the way the derived field was confirmed — the API proved the data, not the button
+- [x] Emit Prometheus exemplars and close the metrics → traces hop — done above, marker clicked through to the trace, with both silent failure modes recorded
 - [ ] Add a provisioned dashboard so the setup survives a fresh install as files rather than clicks
 - [ ] Test the Tempo → Logs direction from a span, which is configured via `tracesToLogsV2` but only exercised in the logs → traces direction here
 - [ ] Replace `service.name`/`service`/`job` with one consistent name across all three signals and see how much of the `tags` translation disappears
