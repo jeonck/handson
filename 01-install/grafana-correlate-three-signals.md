@@ -4,12 +4,12 @@ date: 2026-08-23
 domain: install
 tags: [observability, grafana, correlation, monitoring]
 stack: [grafana, prometheus, loki, tempo, opentelemetry, podman]
-summary: Three datasources provisioned as files, with the links between them declared in the same config. All three hops were then clicked: a log line to its trace, a histogram exemplar to the 443ms request underneath a p95, and a span back to its own service's logs — where the link says "trace" while the query it builds is scoped per span.
+summary: Three datasources and a dashboard provisioned as files, with the links between them declared in the same config. All three hops were clicked — a log line to its trace, an exemplar to the 443ms request under a p95, a span back to its service's logs — and every panel was checked by replaying its stored query, which caught a ratio panel that reads "No data" whenever nothing is wrong.
 source: handson
 env: Grafana 13.2.0 · Prometheus 3.14.0 · Loki 3.7.6 · Tempo (grafana/tempo:latest under Podman 5.7.1) · prometheus-client 0.26.0 · macOS 14.7.5
 verified: 2026-08-23
 verifiability: partial
-verifiability-note: Datasource provisioning, health, cross-datasource link configuration and both correlation hops — logs to traces and metrics to traces — were verified against running backends with real IDs resolved on both sides. All three links were also clicked in the Grafana UI, and the traces-to-logs selector was checked against two spans of one trace rather than one. No dashboards, alerting or long-term storage.
+verifiability-note: Datasource provisioning, health, cross-datasource link configuration and both correlation hops — logs to traces and metrics to traces — were verified against running backends with real IDs resolved on both sides. All three links were clicked in the Grafana UI, the traces-to-logs selector was checked against two spans of one trace rather than one, and the provisioned dashboard was verified by replaying every panel's stored query. Alerting, long-term storage and multi-tenancy are unexercised.
 duration: 45–60 min
 risk: low
 ---
@@ -354,6 +354,92 @@ carried the exact duration and the identity of the request out of that bucket, a
 the span is on screen. **This is the one thing a histogram cannot do on its own**, and the reason
 [[prometheus-instrument-and-query]]'s interpolated p95 was a dead end for finding a specific request.
 
+## One screen, provisioned as files
+
+Three links are three clicks from three different starting points. A dashboard is the version you
+leave running, and it is two more files — a provider and the dashboard itself:
+
+```yaml title="provisioning/dashboards/all.yml"
+apiVersion: 1
+
+providers:
+  - name: handson
+    type: file
+    # Provisioned dashboards are read-only in the UI unless this is true.
+    allowUiUpdates: false
+    options:
+      path: /abs/path/to/provisioning/dashboards/json
+      foldersFromFilesStructure: false
+```
+
+**`path` must be absolute**, and the dashboard JSON needs two things a UI export will not give you:
+
+```json title="dashboards/json/three-signals.json"
+{
+  "uid": "three-signals",
+  "title": "Three signals — orders",
+  "editable": false,
+  "panels": [
+    {
+      "title": "p95 latency — click a diamond to open its trace",
+      "datasource": { "type": "prometheus", "uid": "prom" },
+      "targets": [{
+        "expr": "histogram_quantile(0.95, sum by (le) (rate(orders_request_seconds_bucket[1m])))",
+        "exemplar": true
+      }]
+    }
+  ]
+}
+```
+
+- A **stable `uid`**, so the file always updates the same dashboard instead of creating a new one on
+  every restart.
+- Datasources referenced by the **same hand-written uids** as the datasource file. A dashboard
+  exported from the UI instead contains `"datasource": "${DS_PROMETHEUS}"` plus an `__inputs` block,
+  which is the import format — provisioning does not fill those in, and the panels come up empty.
+
+`"exemplar": true` on the target is what carries the metrics → traces link onto a panel; without it
+the query works and the diamonds simply are not there.
+
+<img src="/01-install/img/grafana-three-signals-dashboard.png" width="620" alt="A Grafana dashboard with three rows: metrics showing error ratio 8.04 percent, in-flight count and requests per second by status, a p95 latency panel with exemplar diamonds, a logs row with Loki lines and a log-derived error rate, and a traces row listing the slowest traces with clickable trace IDs">
+
+Three rows, one time range, one refresh. The value of the arrangement is that the panels disagree
+usefully: the error ratio comes from a counter and the error rate beside the logs comes from
+`rate({level="error"}[1m])` over log text, so the two are computed from independent pipelines and a
+gap between them means one of them is lying.
+
+### Checking a dashboard the way it will be read
+
+A dashboard renders happily with panels that return nothing, so "it loaded" is not a check. The one
+that can fail is to pull the dashboard **back out of the API** and run each panel's stored query
+against its own datasource:
+
+```python title="check_panels.py"
+dash = get("/api/dashboards/uid/three-signals")["dashboard"]
+for p in dash["panels"]:
+    if p["type"] == "row":
+        continue
+    for t in p["targets"]:
+        ...  # query t["expr"] against t["datasource"]["type"], count the results
+```
+
+```
+ id  panel                                         source         n  sample
+  1  Error ratio                                   prometheus     1  0.094017094017094
+  2  In flight                                     prometheus     1  2
+  3  Requests/sec by status                        prometheus     2  1.9272727272727272
+  4  p95 latency — click a diamond to open its tr  prometheus     1  0.46210937499999993
+  5  Logs — trace_id in the line becomes a Tempo   loki          50  order failed sku=SKU-4 trace_id=2b51052670461aab
+  6  Error lines/sec (from logs)                   loki          26  0.016666666666666666
+  7  Slowest traces (>250ms)                       tempo         20  orders 373ms
+
+panels with no data: 0 of 7
+```
+
+It reads the dashboard as Grafana stored it, not as it was written, so a panel that failed to
+provision shows up as a missing row rather than a passing test. **The first run of this reported `1 of
+7` empty**, which is the finding below.
+
 ## Verification checklist
 
 - [x] All three datasources appear with the hand-written uids `prom`, `loki`, `tempo`
@@ -366,6 +452,11 @@ the span is on screen. **This is the one thing a histogram cannot do on its own*
 - [x] A histogram exemplar carries a trace ID out of Prometheus via Grafana's proxy — 8 exemplars, 3 over 250ms
 - [x] The slowest exemplar's `0.355s` resolves in Tempo to a `handle_order` span of `355.2ms` — same request, both signals
 - [x] Prometheus stores **0** exemplars without `--enable-feature=exemplar-storage` and **8** with it — checked both ways
+- [x] The dashboard appears at `/d/three-signals/` after start-up with **no clicking** — provisioned from the file
+- [x] Every one of the **7 panels** returns data, checked by replaying the dashboard's stored queries — and caught one that did not
+- [x] The p95 panel renders **16 exemplar markers**, so the metrics → traces link works on a dashboard and not only in Explore
+- [x] Editing the provisioned dashboard is refused with `400 Cannot save provisioned dashboard`
+- [x] Changing the JSON on disk reloads it **without restarting Grafana**
 - [x] A span's detail panel offers a logs link, and following it returns **1 line** — the clicked service's, for that trace
 - [x] Two spans of the same trace generate **different** stream selectors (`inventory` vs `orders`) — the `tags` mapping is per-span
 - [x] The `orders` log line for that same trace is **absent** from the `inventory` span's result, so the selector is filtering rather than decorating
@@ -423,6 +514,60 @@ application that never emitted any. **Two silent layers stacked on each other** 
 format and a missing flag — each producing the same empty result, which is why the checklist above
 records the with/without numbers rather than just the working one.
 
+**A ratio panel reads "No data" exactly when nothing is wrong.** The first panel check came back
+`1 of 7` empty — the error ratio, on a service that was serving traffic and returning 500s. The
+cause is PromQL, not Grafana:
+
+```promql
+sum(rate(orders_requests_total{status="500"}[1m]))
+```
+
+```
+[]
+```
+
+**`sum()` over a selector that matches nothing returns no series, not zero.** Divide by anything and
+the result is still nothing, so the panel renders "No data". Verified deliberately against a status
+that never occurs, and with the fix, back to back:
+
+```promql
+sum(rate(orders_requests_total{status="503"}[1m])) / sum(rate(orders_requests_total[1m]))
+→ []
+
+(sum(rate(orders_requests_total{status="503"}[1m])) or vector(0)) / sum(rate(orders_requests_total[1m]))
+→ 0
+```
+
+`or vector(0)` is load-bearing on every ratio panel. The failure mode is the nastiest kind: the
+panel is blank in the healthy case and correct during an incident, so it looks broken precisely
+when nobody is investigating it, and gets "fixed" by someone who assumes the query is wrong.
+
+**Grafana logs two `level=error` lines at start-up that mean nothing.**
+
+```
+level=error msg="Failed to read plugin provisioning files from directory" path=…/provisioning/plugins
+level=error msg="can't read alerting provisioning files from directory" path=…/provisioning/alerting
+```
+
+Both are missing optional subdirectories of a provisioning tree that is otherwise working — the
+dashboard and all three datasources loaded from the same tree. Creating empty `plugins/` and
+`alerting/` directories silences them. Worth knowing before grepping the log for `error` after a
+provisioning change and finding two that were always there.
+
+**The API says the provisioned dashboard is saveable, then refuses to save it.**
+
+```
+meta.provisioned: True
+meta.canSave:     True
+
+POST /api/dashboards/db -> HTTP 400
+  message: Cannot save provisioned dashboard
+```
+
+`allowUiUpdates: false` is enforced where it counts, but `canSave` still reports `true`. Same shape
+as the datasource health check below: **the metadata Grafana reports about itself is less reliable
+than asking it to do the thing.**
+
 **Instrumenting the HTTP client means the telemetry traces itself.** The waterfall carries a
 `POST (1.78ms)` span inside `validate` that no application code asked for:
 
@@ -445,10 +590,12 @@ whole scheme fails silently: no error, no warning, just a `TraceID` field that n
 ## Follow-ups
 
 - [x] Emit Prometheus exemplars and close the metrics → traces hop — done above, marker clicked through to the trace, with both silent failure modes recorded
-- [ ] Add a provisioned dashboard so the setup survives a fresh install as files rather than clicks
+- [x] Add a provisioned dashboard so the setup survives a fresh install as files rather than clicks — done above, three rows on one screen
 - [x] Test the Tempo → Logs direction from a span — done above; the link label says "trace" while the selector is per-span
 - [ ] Replace `service.name`/`service`/`job` with one consistent name across all three signals and see how much of the `tags` translation disappears
-- [ ] Put the whole thing in a compose file so the four processes start together rather than by hand
+- [ ] Put the whole thing in a compose file so the six processes start together rather than by hand
+- [ ] Provision an alert rule against the same p95 query and check it fires, since `provisioning/alerting/` is the directory Grafana already complains about
+- [ ] Re-bucket the histogram: the p95 panel sits at ~450ms against a slow path capped near 420ms, the same interpolation artefact measured in [[prometheus-instrument-and-query]]
 
 ## Related
 
