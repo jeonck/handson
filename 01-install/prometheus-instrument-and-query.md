@@ -286,7 +286,7 @@ refused against 9090. `pkill -f "uvicorn app:app"` targets the process rather th
 - [ ] Re-bucket the histogram to bracket the real distribution and confirm p95 lands near 110ms rather than 216ms — the direct fix for the finding above
 - [ ] Add alerting rules and `promtool test rules`, so an alert's firing condition has a unit test
 - [ ] Point Grafana at this Prometheus and see which of the three queries a default panel reaches for
-- [ ] Record trace exemplars on the histogram so a p95 spike links straight to a slow trace in [[opentelemetry-tracing-two-services]]
+- [x] Record trace exemplars on the histogram so a p95 spike links straight to a slow trace — done in [[grafana-correlate-three-signals]], where `generate_latest()` turned out to drop them silently
 - [ ] Add a label with unbounded values (a user ID) and watch series count explode — cardinality is the failure this lab is too small to hit
 - [ ] Scrape the FastAPI app from [[fastapi-mvc-layering]] instead of this synthetic one, so the metrics describe an app with real endpoints
 - [ ] Repeat against the on-prem cluster in [[onprem-3node-kubeadm-ubuntu]] with a ServiceMonitor, where target discovery replaces `static_configs`
@@ -298,4 +298,4 @@ refused against 9090. `pkill -f "uvicorn app:app"` targets the process rather th
 [[dbt-duckdb-local]] — the same lesson from the data side, that a green signal can describe something that did not happen.
 [[opentelemetry-tracing-two-services]] — the tracing half: what a p95 cannot tell you, namely which request was slow and where its time went.
 [[loki-logs-labels-and-cardinality]] — the logs half, and why a trace ID belongs in the line rather than in a label.
-[[grafana-correlate-three-signals]] — where all three are joined, including the exemplar hop this page would need to emit.
+[[grafana-correlate-three-signals]] — where all three are joined, including the exemplars this histogram has to emit for a p95 to point at one request.

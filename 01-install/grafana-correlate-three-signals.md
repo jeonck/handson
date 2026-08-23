@@ -4,20 +4,20 @@ date: 2026-08-23
 domain: install
 tags: [observability, grafana, correlation, monitoring]
 stack: [grafana, prometheus, loki, tempo, opentelemetry, podman]
-summary: Three datasources provisioned as files, with the links between them declared in the same config — a Loki derived field turning trace_id in a log line into a Tempo button. One trace ID was verified in both backends through Grafana's own proxy, and the correlation is the payoff the three separate labs each ended without.
+summary: Three datasources provisioned as files, with the links between them declared in the same config — a Loki derived field turning trace_id in a log line into a Tempo button, and a histogram exemplar carrying a trace ID from a p95 spike to the 355ms trace that produced it. Both hops were walked with real IDs through Grafana's own proxy.
 source: handson
-env: Grafana 13.2.0 · Prometheus 3.14.0 · Loki 3.7.6 · Tempo (grafana/tempo:latest under Podman 5.7.1) · macOS 14.7.5
+env: Grafana 13.2.0 · Prometheus 3.14.0 · Loki 3.7.6 · Tempo (grafana/tempo:latest under Podman 5.7.1) · prometheus-client 0.26.0 · macOS 14.7.5
 verified: 2026-08-23
 verifiability: partial
-verifiability-note: Datasource provisioning, health, cross-datasource link configuration and the trace/log correlation were all verified against running backends, and the derived-field link was confirmed rendering in the Grafana UI. Prometheus exemplars are configured but NOT demonstrated — the app emits no exemplars, so the metrics-to-traces hop is declared and unproven. No dashboards, alerting or long-term storage.
+verifiability-note: Datasource provisioning, health, cross-datasource link configuration and both correlation hops — logs to traces and metrics to traces — were verified against running backends with real IDs resolved on both sides. The derived-field link was confirmed rendering in the Grafana UI; the exemplar hop was verified through Grafana's proxy API rather than by clicking a chart marker. No dashboards, alerting or long-term storage.
 duration: 45–60 min
 risk: low
 ---
 
-> **Verified 2026-08-23.** One real trace ID was fetched from Tempo and found in a Loki log line,
-> both through Grafana's datasource proxy, and the screenshot below is the link Grafana rendered
-> from it. The one hop that is configured but unproven is called out in
-> [What is wired but not proven](#what-is-wired-but-not-proven).
+> **Verified 2026-08-23.** Two real IDs were walked end to end: one fetched from Tempo and found in
+> a Loki log line, and one carried out of a Prometheus histogram bucket by an exemplar and resolved
+> back to a 355ms trace — both through Grafana's datasource proxy. The screenshot below is the link
+> Grafana rendered from the first.
 
 [[prometheus-instrument-and-query]], [[opentelemetry-tracing-two-services]] and
 [[loki-logs-labels-and-cardinality]] each end at the same place: the signal is useful, and getting
@@ -204,14 +204,77 @@ Two details in that screenshot are worth reading:
   [[loki-logs-labels-and-cardinality]] measured: the ID lives in the text, the index stays small, and
   the link works anyway.
 
-## What is wired but not proven
+## Metrics → traces: the exemplar hop
 
-`exemplarTraceIdDestinations` completes the triangle — a p95 spike on a Prometheus histogram would
-offer a jump to the trace that produced one of those samples. **It is configured here and not
-demonstrated**, because exemplars have to be emitted by the application alongside the metric, and
-the service from [[prometheus-instrument-and-query]] does not emit them. The datasource accepts the
-config either way, which is exactly why it needs saying: a correlation that is configured looks
-identical to one that works until someone clicks.
+`exemplarTraceIdDestinations` closes the triangle — a p95 spike on a Prometheus histogram offers a
+jump to the trace that produced one of those samples. Unlike the other two links, **this one is not
+purely configuration**: the application has to attach the trace ID to the observation.
+
+```python title="app.py"
+from prometheus_client import REGISTRY, Counter, Histogram
+from prometheus_client.openmetrics.exposition import (
+    CONTENT_TYPE_LATEST as OPENMETRICS_CONTENT_TYPE,
+    generate_latest as generate_openmetrics,
+)
+
+with tracer.start_as_current_span("handle_order") as span:
+    ...
+    tid = format(span.get_span_context().trace_id, "032x")
+    # The exemplar rides along with the bucket increment, not as a separate metric.
+    LATENCY.labels("/orders").observe(dur, exemplar={"trace_id": tid})
+
+
+@app.get("/metrics")
+def metrics():
+    # Exemplars exist ONLY in the OpenMetrics exposition. generate_latest() from
+    # the top-level package emits the legacy format and drops them silently.
+    return Response(generate_openmetrics(REGISTRY), media_type=OPENMETRICS_CONTENT_TYPE)
+```
+
+An exemplar is the `#`-suffixed tail on a bucket line, and reading one raw makes the mechanism
+obvious:
+
+```
+orders_request_seconds_bucket{endpoint="/orders",le="0.05"} 1.0 # {trace_id="7b79f881…"} 0.0186919 1787504714.36
+```
+
+Bucket count, then trace ID, then **the actual observed value** (18.7ms) and a timestamp. The raw
+duration that the histogram threw away is preserved in the exemplar — for one sample per bucket per
+scrape.
+
+Prometheus needs a flag to keep them, and the scrape config needs the OpenMetrics-aware path:
+
+```bash
+prometheus --config.file=prometheus.yml --storage.tsdb.path=./data \
+  --web.listen-address=127.0.0.1:9090 \
+  --enable-feature=exemplar-storage
+```
+
+Then ask **Grafana** for the exemplars behind the p95 query:
+
+```bash
+curl -u admin:admin --get \
+  "http://127.0.0.1:3000/api/datasources/proxy/uid/prom/api/v1/query_exemplars" \
+  --data-urlencode 'query=orders_request_seconds_bucket' \
+  --data-urlencode "start=$START" --data-urlencode "end=$END"
+```
+
+```
+exemplars: 8   slower than 250ms: 3
+slowest: trace_id=e41e4639d1b5a4ebf04502083725ab57  value=0.355s
+```
+
+And resolve the slowest one in Tempo — again through the proxy, so the link Grafana would follow is
+the link being tested:
+
+```
+trace e41e4639d1b5a4ebf04502083725ab57
+  orders  handle_order  355.2ms  {'slow_path': True}
+```
+
+**Pass condition: the exemplar's value and the span's duration are the same request.** `0.355s` from
+the metric, `355.2ms` from the trace, one 32-character ID linking them. That is the hop the other two
+labs could not make — a percentile pointing at the individual request underneath it.
 
 ## Verification checklist
 
@@ -222,7 +285,9 @@ identical to one that works until someone clicks.
 - [x] The same ID is found in a Loki log line via Grafana
 - [x] The stored `matcherRegex` extracts that exact ID when tested against the real log line
 - [x] Grafana renders a `TraceID` field with a `Tempo` link on the expanded log row
-- [ ] Metrics → traces via exemplars — **configured, not demonstrated**
+- [x] A histogram exemplar carries a trace ID out of Prometheus via Grafana's proxy — 8 exemplars, 3 over 250ms
+- [x] The slowest exemplar's `0.355s` resolves in Tempo to a `handle_order` span of `355.2ms` — same request, both signals
+- [x] Prometheus stores **0** exemplars without `--enable-feature=exemplar-storage` and **8** with it — checked both ways
 
 ## Rollback
 
@@ -255,6 +320,26 @@ parsed from the line. They look interchangeable in the UI and are not: one costs
 request forever, the other costs nothing and is computed at query time. Seeing both side by side is
 the clearest argument for the second.
 
+**`generate_latest()` drops every exemplar and reports nothing wrong.** The first exemplar run
+produced a clean `/metrics` endpoint, a healthy scrape and zero exemplars anywhere. The cause is one
+import: exemplars are part of the **OpenMetrics** exposition, and `prometheus_client.generate_latest`
+emits the legacy text format, which has no syntax for them. It does not warn, does not error, and
+the bucket lines look perfectly normal — they are simply missing their `#` tail. `grep '#' ` on the
+raw `/metrics` output is the check, and it is the only one that fails.
+
+**Prometheus discards exemplars unless you ask it to keep them.** With the app emitting correctly,
+`/api/v1/query_exemplars` still returned an empty list. Measured both ways against the same traffic:
+
+```
+without --enable-feature=exemplar-storage: 0
+with    --enable-feature=exemplar-storage: 8
+```
+
+Exemplar storage is still behind a feature flag, and its absence is indistinguishable from an
+application that never emitted any. **Two silent layers stacked on each other** — a wrong exposition
+format and a missing flag — each producing the same empty result, which is why the checklist above
+records the with/without numbers rather than just the working one.
+
 **A correlation is only as good as the ID the application remembers to log.** Nothing in Grafana,
 Loki or Tempo can create the link — the trace ID has to be pulled out of the active span and written
 into the log line by the code. `current_trace_id()` is three lines and is the single point where the
@@ -262,7 +347,8 @@ whole scheme fails silently: no error, no warning, just a `TraceID` field that n
 
 ## Follow-ups
 
-- [ ] Emit Prometheus exemplars from the instrumented service and close the metrics → traces hop, the one unchecked box above
+- [x] Emit Prometheus exemplars and close the metrics → traces hop — done above, with both silent failure modes recorded
+- [ ] Click the exemplar marker in a Grafana chart and confirm the Tempo link renders, the way the derived field was confirmed — the API proved the data, not the button
 - [ ] Add a provisioned dashboard so the setup survives a fresh install as files rather than clicks
 - [ ] Test the Tempo → Logs direction from a span, which is configured via `tracesToLogsV2` but only exercised in the logs → traces direction here
 - [ ] Replace `service.name`/`service`/`job` with one consistent name across all three signals and see how much of the `tags` translation disappears
@@ -270,6 +356,6 @@ whole scheme fails silently: no error, no warning, just a `TraceID` field that n
 
 ## Related
 
-[[prometheus-instrument-and-query]] — metrics, and the exemplar hop that is still unproven.
+[[prometheus-instrument-and-query]] — metrics, and the histogram whose exemplars complete the third hop here.
 [[opentelemetry-tracing-two-services]] — traces, exported here to Tempo instead of the console.
 [[loki-logs-labels-and-cardinality]] — logs, and why the trace ID belongs in the line, which is what makes the derived field work.

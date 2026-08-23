@@ -216,7 +216,7 @@ to end up with an app that starts fine and emits nothing.
 
 - [ ] Replace `ConsoleSpanExporter` with OTLP into a collector and view the same trace in Jaeger — the waterfall above is a UI's whole job
 - [ ] Add sampling and confirm what fraction of traces survive; at 100% this lab never has to decide what to drop
-- [ ] Correlate with metrics: record `trace_id` as an exemplar on the histogram from [[prometheus-instrument-and-query]], so a p95 spike links to a specific slow trace
+- [x] Correlate with metrics: `trace_id` recorded as a histogram exemplar in [[grafana-correlate-three-signals]] — a `0.355s` exemplar resolved to a `355.2ms` span
 - [ ] Instrument a real database client rather than a `sleep`, and check whether the SQL statement lands in the span attributes — and whether it should, given it may contain data
 - [ ] Break the chain on purpose by removing `HTTPXClientInstrumentor` and confirm the trace count goes from 1 to 2, pinning the failure mode described above
 
