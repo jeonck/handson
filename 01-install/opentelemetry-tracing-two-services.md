@@ -225,3 +225,4 @@ to end up with an app that starts fine and emits nothing.
 [[prometheus-instrument-and-query]] — the metrics half, and the p95 that motivated this page.
 [[fastapi-mvc-layering]] — the app that would carry this instrumentation for real.
 [[langgraph-control-flow]] — spans and graph nodes are the same shape; a trace is what a graph run looks like after the fact.
+[[loki-logs-labels-and-cardinality]] — where this page's `trace_id` should end up in a log line, so a slow trace leads to its logs.

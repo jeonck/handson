@@ -297,3 +297,4 @@ refused against 9090. `pkill -f "uvicorn app:app"` targets the process rather th
 [[langgraph-control-flow]] — a validation node is the same instinct as a metric: notice the failure before a human does.
 [[dbt-duckdb-local]] — the same lesson from the data side, that a green signal can describe something that did not happen.
 [[opentelemetry-tracing-two-services]] — the tracing half: what a p95 cannot tell you, namely which request was slow and where its time went.
+[[loki-logs-labels-and-cardinality]] — the logs half, and why a trace ID belongs in the line rather than in a label.
