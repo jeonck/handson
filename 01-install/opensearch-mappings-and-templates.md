@@ -285,6 +285,14 @@ Aggregations that needed a subfield now work on the field itself:
 podman compose down -v          # containers and the data volume
 ```
 
+**`${VAR:?}` applies to `down` too.** With the variable unset, teardown fails the same way start-up
+does — `exit status 1` — which is briefly alarming when you are trying to clean up. Any value will
+do, since nothing is being started:
+
+```bash
+OPENSEARCH_ADMIN_PASSWORD=x podman compose down -v
+```
+
 Single indices, without tearing the cluster down:
 
 ```bash
