@@ -298,3 +298,4 @@ refused against 9090. `pkill -f "uvicorn app:app"` targets the process rather th
 [[dbt-duckdb-local]] — the same lesson from the data side, that a green signal can describe something that did not happen.
 [[opentelemetry-tracing-two-services]] — the tracing half: what a p95 cannot tell you, namely which request was slow and where its time went.
 [[loki-logs-labels-and-cardinality]] — the logs half, and why a trace ID belongs in the line rather than in a label.
+[[grafana-correlate-three-signals]] — where all three are joined, including the exemplar hop this page would need to emit.

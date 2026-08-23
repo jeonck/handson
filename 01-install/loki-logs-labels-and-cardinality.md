@@ -242,3 +242,4 @@ a dashboard variable against a label list containing an entry you did not create
 [[prometheus-instrument-and-query]] — metrics: how often and how slow, in aggregate.
 [[opentelemetry-tracing-two-services]] — traces: one request's path across services, and the `trace_id` these logs should carry.
 [[fastapi-mvc-layering]] — the application that would emit all three signals.
+[[grafana-correlate-three-signals]] — the derived field that turns this page's in-line trace ID into a clickable trace.
