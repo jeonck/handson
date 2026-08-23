@@ -9,7 +9,7 @@ source: handson
 env: OpenSearch 3.8.0 (Lucene 10.5.0) · OpenSearch Dashboards 3.8.0 (Chromium via Playwright for the UI steps) · Podman 5.7.1 with docker-compose 5.3.1 · macOS 14.7.5
 verified: 2026-08-23
 verifiability: partial
-verifiability-note: Verified on a single node with the demo TLS certificates and the built-in admin user. The full ISM lifecycle — rollover, a warm state with read_only/force_merge/index_priority, and deletion — was exercised end to end, but with lab-sized minute-scale transitions and a tightened scheduler rather than a real policy measured in days. The warm tier's allocation half needs more than one node. The Dashboards steps — tenant selection, index pattern creation, Discover — were driven through the real UI and screenshotted. Multi-node allocation, real certificates, role-based access for anyone other than admin, saved visualizations and snapshots are unexercised — and cluster behaviour under node loss is the thing a single node structurally cannot show.
+verifiability-note: Verified on a single node with the demo TLS certificates and the built-in admin user. The full ISM lifecycle — rollover, a warm state with read_only/force_merge/index_priority, and deletion — was exercised end to end, but with lab-sized minute-scale transitions and a tightened scheduler rather than a real policy measured in days. The warm tier's allocation half needs more than one node. The Dashboards steps — tenant selection, index pattern creation, Discover, and a three-panel dashboard imported from a file and restored after the volume was destroyed — were driven through the real UI and screenshotted. Multi-node allocation, real certificates, role-based access for anyone other than admin, saved visualizations and snapshots are unexercised — and cluster behaviour under node loss is the thing a single node structurally cannot show.
 duration: 40–60 min
 risk: low
 ---
@@ -507,6 +507,95 @@ all:
 result set, and it looks identical for a field that will fail the moment a dashboard panel asks the
 cluster the same question.
 
+## Visualizations and a dashboard, as a file
+
+Clicking a dashboard together is fine once. **Defining it as a file is what survives the next
+`compose down -v`**, and OpenSearch Dashboards has an import/export format built for exactly that:
+NDJSON, one saved object per line.
+
+Three panels, each chosen to lean on a different mapping decision:
+
+| Panel | Aggregation | Depends on |
+|---|---|---|
+| Log levels over time | date histogram split by `level` | `@timestamp` being `date`, `level` being `keyword` |
+| Requests by service | terms on `service` | `service` being `keyword` |
+| Duration percentiles by service | percentiles on `duration_ms` | `duration_ms` being `integer`, not `text` |
+
+**Not one of them would work against the dynamically-mapped index from earlier.** The dashboard is
+the mapping decisions, cashed in.
+
+```python title="gen_objects.py"
+# The field list comes from OpenSearch's own _field_caps, because an
+# index-pattern saved object created through the API has no fields attribute.
+caps = get(f"https://127.0.0.1:9200/{INDEX}/_field_caps?fields=*")["fields"]
+fields = [{"name": name, "type": KIND.get(es_type, "string"), "esTypes": [es_type],
+           "searchable": info.get("searchable", False),
+           # This flag is the mapping decision, carried into the UI.
+           "aggregatable": info.get("aggregatable", False), ...}
+          for name, byte in sorted(caps.items())
+          for es_type, info in [next(iter(byte.items()))]]
+
+SRC_VIS = json.dumps({"query": {...}, "filter": [],
+                      # Names the reference; without it the panel renders
+                      # 'Trying to initialize aggs without index pattern'.
+                      "indexRefName": "kibanaSavedObjectMeta.searchSourceJSON.index"})
+```
+
+```bash
+curl -s -u "admin:$OPENSEARCH_ADMIN_PASSWORD" \
+  -X POST "http://127.0.0.1:5601/api/saved_objects/_import?overwrite=true" \
+  -H 'osd-xsrf: true' -H 'securitytenant: global' \
+  -F file=@applogs-objects.ndjson
+```
+
+```
+  import: True 5
+```
+
+`osd-xsrf: true` is mandatory on every write to the Dashboards API — without it the request is
+rejected outright. `securitytenant` is the one in [Where this bit us](#where-this-bit-us).
+
+<img src="/01-install/img/opensearch-dashboard.png" width="620" alt="OpenSearch Dashboards showing the applogs overview dashboard with a stacked bar chart of log levels over time, a donut of requests by service, and a table of duration percentiles by service">
+
+The percentile table is the payoff, and it is only possible because `duration_ms` is a number:
+
+```
+  service     50th      95th   99th
+  inventory   592.714   875    895
+  orders      142.412   249.6  258
+```
+
+### Does it survive `compose down -v`?
+
+**No, and that is the point of having the file.** Saved objects live in `.kibana*` indices inside the
+same data volume as the documents:
+
+```
+  index                    docs.count
+  .kibana_1                        12
+  .kibana_92668751_admin_1          1
+```
+
+Destroying the volume and bringing the stack back up:
+
+```
+  saved objects found: 0
+```
+
+Re-indexing the documents and re-importing the one NDJSON file rebuilds the whole thing — the
+screenshot above is from **after** the restore, not before. **A dashboard you cannot recreate from a
+file is a dashboard you will lose**, and the export API is one call:
+
+```bash
+curl -s -u "admin:$OPENSEARCH_ADMIN_PASSWORD" \
+  -X POST "http://127.0.0.1:5601/api/saved_objects/_export" \
+  -H 'osd-xsrf: true' -H 'Content-Type: application/json' \
+  -d '{"objects":[{"type":"dashboard","id":"applogs-dashboard"}],"includeReferencesDeep":true}'
+```
+
+`includeReferencesDeep` is what pulls the three visualizations and the index pattern along with it.
+Exporting the dashboard alone gives you a file that imports cleanly and renders nothing.
+
 ## Verification checklist
 
 - [x] A weak `OPENSEARCH_INITIAL_ADMIN_PASSWORD` **fails the container**, exit `1`, with the regex rule named
@@ -525,6 +614,11 @@ cluster the same question.
 - [x] The pattern records `message` as `aggregatable=False` and `service`/`level` as `True` — read from the saved object, not the screen
 - [x] Discover shows **26/60** at the default 15 minutes and **60/60** at 24 hours, on identical data
 - [x] The field sidebar offers Top 5 values for `message` while a terms aggregation on it **fails** — the summary is client-side
+- [x] Three visualizations and a dashboard import from one NDJSON file and **render**, checked by reading the panel titles, not the import response
+- [x] The percentile table returns real numbers — `inventory` p95 `875` vs `orders` p95 `249.6` — which only works because `duration_ms` is `integer`
+- [x] `compose down -v` destroys the saved objects (`saved objects found: 0`), and re-importing the file rebuilds them
+- [x] An import with no tenant header lands in the **private** tenant: `.kibana_1` holds only config
+- [x] The same cluster shows the dashboard in Global and **not** in Private, from two browser sessions
 - [x] An `ism_template` attaches the policy at index creation, with no per-index step
 - [x] Rollover fires on `min_doc_count` and creates `applogs-000002`
 - [x] The write alias **follows** the rollover, and a document written to `applogs` afterwards lands in `-000002`
@@ -603,6 +697,72 @@ early. So the common advice that "force merge reclaims space from deleted docume
 the content and wrong about the timing: **the space comes back at the merge, the `docs.deleted`
 count does not go to zero until the lease lets it.** Do not use `docs.deleted` as the check that a
 merge worked; use the segment count and, patiently, the store size.
+
+**A saved object imports successfully and then fails to render, three different ways.** Every one of
+these returned `success: True, count: 5` from the import API, and every one produced a broken
+dashboard. **Import success means the JSON parsed, not that anything works.**
+
+<img src="/01-install/img/opensearch-dashboard-broken.png" width="620" alt="OpenSearch dashboard with three empty panels, each showing the error Trying to initialize aggs without index pattern">
+
+First, a reference that nothing points at:
+
+```
+Trying to initialize aggs without index pattern
+```
+
+The visualization had a correct `references` entry naming the index pattern, and that is not enough
+— `kibanaSavedObjectMeta.searchSourceJSON` must contain `"indexRefName"` giving the **name** of the
+reference to resolve. The reference is the target; `indexRefName` is the pointer.
+
+Second, the same key on an object that has no such reference. Adding `indexRefName` to the
+*dashboard* — which references visualizations, not an index pattern — made the dashboard route
+silently give up and redirect to the dashboard list. **The URL said `#/view/applogs-dashboard` while
+the page showed the index of dashboards**, with no error anywhere, which took a while to recognise as
+a failure at all.
+
+Third, an index pattern with no field list:
+
+```
+Could not locate that index-pattern-field (id: @timestamp)
+Could not locate that index-pattern-field (id: service)
+Could not locate that index-pattern-field (id: duration_ms)
+```
+
+An index pattern created **through the UI** has its `fields` attribute populated from the cluster's
+field caps. One created through the saved-objects API has whatever you put there, and `{title,
+timeFieldName}` alone is accepted. The fix is to build `fields` from `_field_caps` yourself, which is
+also how the `aggregatable` flags from earlier get into the UI in the first place.
+
+**The check that catches all three is rendering the dashboard and reading the panels** — not the
+import response, and not `_find` listing the objects, both of which were happy throughout.
+
+**Saved objects imported over the API land in the caller's *private* tenant.** After a clean import
+with no tenant header, the Global tenant index held nothing but config:
+
+```
+  .kibana_1                 -> config
+  .kibana_92668751_admin_1  -> config, index-pattern, 3 visualizations, dashboard
+```
+
+The tenant selector in the UI shows why: reading the radio buttons directly,
+
+```
+  {'id': 'global',  'checked': False}
+  {'id': 'private', 'checked': True}     <- the default
+```
+
+**Private is pre-selected**, so a user who accepts the dialog and a script that omits the header both
+end up somewhere nobody else can see. Demonstrated by logging in twice against the same restored
+cluster:
+
+```
+  tenant=private  dashboard listed: False
+  tenant=global   dashboard listed: True
+```
+
+`-H 'securitytenant: global'` on the import is the fix, and it belongs in any script that provisions
+dashboards. This is the same trap as the first-login dialog, arrived at through the API — and the
+API version is worse, because there is no dialog to remind you.
 
 **The security plugin blocks the whole UI on first login with a tenant chooser.** Before any
 navigation is possible:
@@ -806,7 +966,7 @@ data is missing**, and getting used to ignoring it in a lab is how it gets ignor
 - [ ] Wait out `soft_deletes.retention_lease.period` (or lower it) and confirm `docs.deleted` finally drops to zero
 - [ ] Replace the demo certificates and drop `-k`, which is the first real step toward anything non-lab
 - [ ] Create a non-admin role that can read `applogs-*` and nothing else, and confirm it is refused elsewhere
-- [ ] Build a saved visualization and dashboard on top of this pattern, and check they survive `compose down -v` — saved objects live in `.kibana`, which the data volume holds
+- [ ] Put `applogs-objects.ndjson` and the index template in a repository and import both from CI, so a fresh cluster comes up complete without anyone opening the UI
 - [ ] Ship the logs from [[loki-logs-labels-and-cardinality]] into this index and compare what each system makes cheap — labels versus mappings is the same decision made twice
 - [ ] Measure the storage cost of `text` + `.keyword` against plain `keyword` on a corpus big enough to matter
 - [ ] Take a snapshot to a filesystem repository and restore it into a fresh cluster
