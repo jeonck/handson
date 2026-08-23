@@ -37,6 +37,9 @@ services:
       OPENSEARCH_INITIAL_ADMIN_PASSWORD: ${OPENSEARCH_ADMIN_PASSWORD:?set it before compose up}
       # Heap. Half of container memory is the usual rule; 1g is plenty here.
       OPENSEARCH_JAVA_OPTS: -Xms1g -Xmx1g
+      # Without this the system:admin/system_index permission is parsed and
+      # ignored, and protected indices answer 0 instead of refusing.
+      plugins.security.system_indices.permission.enabled: "true"
     ulimits:
       memlock: {soft: -1, hard: -1}
       nofile: {soft: 65536, hard: 65536}
@@ -621,6 +624,10 @@ Exporting the dashboard alone gives you a file that imports cleanly and renders 
 - [x] `_cat/indices` and `_count` **disagree** on the ISM history index — 1 versus 0, with no error
 - [x] The super-admin certificate reads **6** history entries from the index `admin` sees as empty
 - [x] Four protected system indices all read 0 to `admin` while holding documents; `.kibana*` does not
+- [x] A role granted `system:admin/system_index` still reads **0** until `system_indices.permission.enabled` is turned on
+- [x] With it on, that role reads **7** history entries and `admin` gets an explicit **403** instead of a silent zero
+- [x] The granted role is still refused on an index it was not given — `403` on `applogs`
+- [x] Ordinary indices are unaffected for `admin` after the change
 - [x] The same cluster shows the dashboard in Global and **not** in Private, from two browser sessions
 - [x] An `ism_template` attaches the policy at index creation, with no per-index step
 - [x] Rollover fires on `min_doc_count` and creates `applogs-000002`
@@ -798,9 +805,59 @@ And the history itself, once readable, is exactly the audit trail `_ism/explain`
 **The lesson is bigger than ISM.** A protected system index answers every query with zero rather
 than a denial, so "the index is empty" and "you are not allowed to see this" are indistinguishable
 from the response. **When a system index reads empty, compare `_cat/indices` against `_count` before
-believing it** — they disagree exactly when something is being hidden. The other documented routes
-to that data, neither exercised here, are adding the index to a role's `system_index` permissions or
-turning the protection off.
+believing it** — they disagree exactly when something is being hidden.
+
+**Granting the permission is not enough, because the permission is switched off.** Creating a role
+with `system:admin/system_index` on the history pattern, mapping a user to it, and reading:
+
+```json
+{
+  "cluster_permissions": ["cluster_composite_ops_ro"],
+  "index_permissions": [{
+    "index_patterns": [".opendistro-ism-managed-index-history-*"],
+    "allowed_actions": ["read", "indices:admin/mappings/get", "system:admin/system_index"]
+  }]
+}
+```
+
+```
+  ismreader now sees: {"count":0,...}
+```
+
+Unchanged. The permission model has a **second switch**, absent from the demo config and defaulting
+off, so the permission is parsed and ignored:
+
+```yaml
+plugins.security.system_indices.permission.enabled: "true"
+```
+
+With that set, the same role and the same user:
+
+```
+  ismreader:  {"count":7,...}
+  admin:      403 security_exception — no permissions for [] and User [name=admin, ...]
+```
+
+**Turning it on changes two things at once**, and the second is the more valuable:
+
+| | default (`permission.enabled` off) | `permission.enabled: true` |
+|---|---|---|
+| `admin` on a system index | silent `count: 0` | **`403 security_exception`** |
+| role holding `system:admin/system_index` | silent `count: 0` — ignored | **`count: 7`** |
+| super-admin certificate | works | works |
+
+So the default configuration manages to both ignore the grant *and* hide the refusal. Enabling the
+permission model makes the denial honest, which is worth more than the access: **a `403` sends
+someone to the role definition, a `0` sends them to look for a bug in ISM.**
+
+The role stays properly confined — `ismreader` reading a normal index it was not granted:
+
+```
+  403  no permissions for [indices:data/read/search] and User [name=ismreader, ...]
+```
+
+and `admin` still reads ordinary indices exactly as before, so the setting scopes to protected
+system indices only.
 
 **Saved objects imported over the API land in the caller's *private* tenant.** After a clean import
 with no tenant header, the Global tenant index held nothing but config:
@@ -1027,7 +1084,7 @@ data is missing**, and getting used to ignoring it in a lab is how it gets ignor
 
 ## Follow-ups
 
-- [ ] Grant a role the `system_index` permission for `.opendistro-ism-*` and confirm the history becomes readable without the super-admin certificate — the supported route this page names but does not exercise
+- [ ] Decide whether `system_indices.permission.enabled` belongs on by default in a real cluster, given it converts every existing silent zero into a `403` for callers that were quietly getting nothing
 - [ ] Add an `allocation` action moving warm indices onto dedicated nodes by attribute — the half of a warm tier a single node structurally cannot show
 - [ ] Wait out `soft_deletes.retention_lease.period` (or lower it) and confirm `docs.deleted` finally drops to zero
 - [ ] Replace the demo certificates and drop `-k`, which is the first real step toward anything non-lab
