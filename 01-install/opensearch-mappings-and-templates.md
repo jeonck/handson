@@ -3,13 +3,13 @@ title: OpenSearch — a single node, and the range query that quietly lies
 date: 2026-08-23
 domain: install
 tags: [search, logs, indexing, retention, containers]
-stack: [opensearch, opensearch-dashboards, podman, docker-compose]
+stack: [opensearch, opensearch-dashboards, minio, podman, docker-compose]
 summary: A single-node OpenSearch 3.8 with security on, interrogated about its own guesses. Dynamic mapping typed a quoted "412" as text, and duration_ms >= 200 then returned a document whose value was 87 — no error, just string comparison. An index template fixes it and does nothing to the index that already exists, and an ISM policy then rolls that index over and deletes it while writers keep addressing one alias.
 source: handson
 env: OpenSearch 3.8.0 (Lucene 10.5.0) · OpenSearch Dashboards 3.8.0 (Chromium via Playwright for the UI steps) · Podman 5.7.1 with docker-compose 5.3.1 · macOS 14.7.5
 verified: 2026-08-23
 verifiability: partial
-verifiability-note: Verified on a single node with the demo TLS certificates and the built-in admin user. The full ISM lifecycle — rollover, a warm state with read_only/force_merge/index_priority, and deletion — was exercised end to end, but with lab-sized minute-scale transitions and a tightened scheduler rather than a real policy measured in days. The warm tier's allocation half needs more than one node. The Dashboards steps — tenant selection, index pattern creation, Discover, and a three-panel dashboard imported from a file and restored after the volume was destroyed — were driven through the real UI and screenshotted. Snapshot and restore were exercised across a destroyed and rebuilt cluster, but against a filesystem repository on one node — object-storage repositories and multi-node repository access are unexercised, as are multi-node allocation and real certificates — and cluster behaviour under node loss is the thing a single node structurally cannot show.
+verifiability-note: Verified on a single node with the demo TLS certificates and the built-in admin user. The full ISM lifecycle — rollover, a warm state with read_only/force_merge/index_priority, and deletion — was exercised end to end, but with lab-sized minute-scale transitions and a tightened scheduler rather than a real policy measured in days. The warm tier's allocation half needs more than one node. The Dashboards steps — tenant selection, index pattern creation, Discover, and a three-panel dashboard imported from a file and restored after the volume was destroyed — were driven through the real UI and screenshotted. Snapshot and restore were exercised across a destroyed and rebuilt cluster, both to a filesystem repository and to S3-compatible object storage (MinIO, not AWS — so IAM roles and real S3 semantics are unproven). Multi-node repository access, multi-node allocation and real certificates are unexercised — and cluster behaviour under node loss is the thing a single node structurally cannot show.
 duration: 40–60 min
 risk: low
 ---
@@ -769,6 +769,95 @@ rather than assumed:
 `applogs-000001` sits there holding the pre-restore state until someone is confident enough to
 delete it, which is a decision that can now be taken calmly and separately.
 
+### The same thing against object storage
+
+A bind mount is not a backup target anyone would use. The `repository-s3` plugin is, and it can be
+exercised against **MinIO** — the same S3 API, the same plugin code path, no cloud credential
+involved. What that costs is four pieces of setup, each of which fails differently.
+
+**The plugin is not installed.** The distribution image ships two dozen plugins and not this one:
+
+```dockerfile title="Containerfile.s3"
+FROM docker.io/opensearchproject/opensearch:3
+
+# repository-s3 is NOT bundled with the distribution image, despite the two
+# dozen plugins that are. Snapshots to object storage need it installed.
+RUN /usr/share/opensearch/bin/opensearch-plugin install --batch repository-s3
+```
+
+**The endpoint settings are node settings; the credentials are not.**
+
+```yaml title="compose.yml"
+    environment:
+      # Non-AWS S3 needs the endpoint and path-style addressing.
+      # The access key and secret do NOT go here - see the keystore below.
+      s3.client.default.endpoint: "minio:9000"
+      s3.client.default.protocol: "http"
+      s3.client.default.path_style_access: "true"
+      # AWS SDK v2 demands a region even when the endpoint is not AWS.
+      s3.client.default.region: "us-east-1"
+```
+
+```bash
+printf 'opensearch'   | bin/opensearch-keystore add --stdin --force s3.client.default.access_key
+printf '<REDACTED>'   | bin/opensearch-keystore add --stdin --force s3.client.default.secret_key
+
+curl -sk -u "admin:$OPENSEARCH_ADMIN_PASSWORD" \
+  -X POST "https://127.0.0.1:9200/_nodes/reload_secure_settings"
+```
+
+```
+  keystore reloaded: 1 of 1
+```
+
+**`reload_secure_settings` is the reason this does not need a restart** — the S3 client re-reads its
+credentials from the keystore on demand. Then the repository itself:
+
+```bash
+-X PUT ".../_snapshot/s3-minio" -d '{
+  "type": "s3",
+  "settings": { "bucket": "opensearch-snapshots", "client": "default", "base_path": "opensearch" }
+}'
+-X POST ".../_snapshot/s3-minio/_verify"
+```
+
+```
+  verify: [{'name': '0c3c4e23b114'}]
+```
+
+A snapshot then writes real S3 objects, which is worth looking at once:
+
+```
+  opensearch/index-0                                                    440B
+  opensearch/index.latest                                                 8B
+  opensearch/indices/2tl_DcA9TsSVF6sXgg4XVg/0/__qFnY27ZxRIaPmIDEwG6uIQ  35KiB
+  opensearch/indices/2tl_DcA9TsSVF6sXgg4XVg/0/index-qrYjSY54T7OVwlWJ…   1.2KiB
+  opensearch/meta-cp1k1zrRTmCXTIfTcNIitg.dat                            234B
+    total objects: 9
+```
+
+**Then destroy the cluster and leave the bucket alone**, which is the arrangement that makes object
+storage worth the trouble:
+
+```bash
+podman compose rm -sf opensearch
+podman volume rm opensearch-lab_os-data     # the cluster's data
+# opensearch-lab_minio-data survives — it is the backup
+```
+
+Re-adding the keystore entries, re-registering the same bucket, and restoring:
+
+```
+  the snapshot is discovered from the bucket
+  id         status indices successful_shards
+  snap-s3-1 SUCCESS       1                 1
+
+  restored:    ['applogs-000001'] | shards: {'total': 1, 'failed': 0, 'successful': 1}
+  docs back:   400
+  duration_ms: integer
+  range >= 800 -> 21 hits
+```
+
 ### What a snapshot does not bring back
 
 ```
@@ -832,6 +921,11 @@ A cluster is only as recoverable as the least reproducible of those four.
 - [x] With `include_aliases: false` the restored copy (400 docs) and the damaged live index (107 docs) **coexist**, alias unmoved
 - [x] One `_aliases` call swaps reads from **107 to 400** and writes follow to the restored index
 - [x] The mirrored call rolls the swap back, checked in both directions
+- [x] `repository-s3` is **absent** from the distribution image and has to be installed
+- [x] Registration and `_verify` return the same sentence for a missing region, a missing KMS and missing credentials — each identified only from the node log
+- [x] Keystore entries added via `exec` are **gone** after the container is recreated
+- [x] `reload_secure_settings` picks up new credentials with **no restart** — `1 of 1`
+- [x] A snapshot writes **9 objects** into the bucket, and destroying the cluster while keeping the bucket still restores 400 documents with the `integer` mapping intact
 - [x] The same cluster shows the dashboard in Global and **not** in Private, from two browser sessions
 - [x] An `ism_template` attaches the policy at index creation, with no per-index step
 - [x] Rollover fires on `min_doc_count` and creates `applogs-000002`
@@ -949,6 +1043,50 @@ also how the `aggregatable` flags from earlier get into the UI in the first plac
 
 **The check that catches all three is rendering the dashboard and reading the panels** — not the
 import response, and not `_find` listing the objects, both of which were happy throughout.
+
+**The S3 repository failed three times, and the API returned the same useless sentence each time.**
+
+```
+  [s3-minio] path [opensearch] is not accessible on cluster-manager node
+```
+
+That message is what registration and `_verify` both return, unchanged, for three completely
+different causes. **Every one of them was only diagnosable from the node log**, where the `Caused by`
+chain names the real problem:
+
+```
+Caused by: SdkClientException: Unable to load region from any of the providers in the chain
+```
+
+AWS SDK v2 requires a region even when the endpoint is not AWS — `s3.client.default.region`.
+
+```
+Caused by: S3Exception: Server side encryption specified but KMS is not configured
+           (Service: S3, Status Code: 501)
+```
+
+`repository-s3` asks for server-side encryption, and MinIO answers `501 NotImplemented` unless it has
+a KMS. Setting `server_side_encryption: false` on the repository **did not stop it** — the stored
+setting reads `"false"` and the header goes out anyway — so the fix was to give MinIO its built-in
+single-key KMS rather than to argue with the plugin.
+
+And before either of those, a missing access key produced the identical sentence. **The lesson is the
+diagnostic habit, not the three fixes:** when a repository will not verify, the API tells you nothing
+and `podman logs` tells you everything. Reach for the log first.
+
+**Keystore entries do not survive the container being recreated.** Adding credentials with
+`podman exec ... opensearch-keystore add` writes into the container's config directory, which is not
+a volume:
+
+```
+  keystore s3 entries: 0     # after `compose up -d` picked up an env change
+```
+
+Every `compose up -d` that changes the service definition silently discards them, and the next
+repository call fails with the same unhelpful sentence as everything else. For anything beyond a
+lab, bake the keystore into the image at build time or mount the config directory — and note this is
+the same class of mistake as the ISM rule edit earlier: **state that lives inside a container is
+state you are going to lose.**
 
 **A renamed restore fails on the alias it is carrying.** The obvious `rename_pattern` call, with
 alias handling left at its default:
@@ -1366,7 +1504,7 @@ data is missing**, and getting used to ignoring it in a lab is how it gets ignor
 - [ ] Ship the logs from [[loki-logs-labels-and-cardinality]] into this index and compare what each system makes cheap — labels versus mappings is the same decision made twice
 - [ ] Measure the storage cost of `text` + `.keyword` against plain `keyword` on a corpus big enough to matter
 - [ ] Script the restore-and-swap as one runbook step with a verification gate between the restore and the `_aliases` call, since the safety comes from the pause rather than from the commands
-- [ ] Point the repository at object storage with the `repository-s3` plugin, which is what a real backup uses and what a bind mount cannot represent
+- [ ] Run the same repository against real S3 with an IAM role rather than static keys, which is the credential path a production cluster actually uses and the one MinIO cannot stand in for
 
 ## Related
 
