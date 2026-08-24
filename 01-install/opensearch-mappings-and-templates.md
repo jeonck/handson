@@ -693,6 +693,82 @@ still *usable*:
 
 A numeric range on a numeric field, which is exactly what the dynamically-mapped index could not do.
 
+### Restoring without deleting anything
+
+The delete-then-restore sequence above is the wrong shape, and `rename_pattern` is the right one.
+The scenario, made concrete: a snapshot taken at 400 documents, then 293 deleted from the live index
+by mistake.
+
+```
+  docs at snapshot time: 400
+  deleted:               293
+  live index now:        107
+```
+
+```bash
+curl -sk -u "admin:$OPENSEARCH_ADMIN_PASSWORD" \
+  -X POST ".../_snapshot/local-fs/snap-1/_restore?wait_for_completion=true" -d '{
+  "indices": "applogs-000001",
+  "rename_pattern": "applogs-(.+)",
+  "rename_replacement": "applogs-restored-$1",
+  "include_aliases": false
+}'
+```
+
+**`include_aliases: false` is not optional here** — see [Where this bit us](#where-this-bit-us).
+
+```
+  index                   docs.count health
+  applogs-restored-000001        400 green
+  applogs-000001                 107 green
+
+  alias   index          is_write_index
+  applogs applogs-000001 true
+```
+
+**Two indices, nothing deleted, and the alias has not moved.** The restored copy carries the
+snapshot's 400 documents while the damaged live index keeps its 107, so the restore can be inspected
+before anyone commits to it. The mapping came along as well — `duration_ms` is still `integer`.
+
+Then the cutover is one call, and it is atomic:
+
+```bash
+-X POST ".../_aliases" -d '{
+  "actions": [
+    { "remove": { "index": "applogs-000001",          "alias": "applogs" } },
+    { "add":    { "index": "applogs-restored-000001", "alias": "applogs", "is_write_index": true } }
+  ]
+}'
+```
+
+```
+  read through the alias BEFORE the swap: 107
+  read through the alias AFTER the swap:  400
+```
+
+**Both actions in one request is the whole point.** Two separate calls leave a window in which the
+alias points at nothing, and every reader and writer gets an error for the duration. Writers follow
+immediately and without being told:
+
+```
+  landed in: applogs-restored-000001 | result: created
+```
+
+And because nothing was destroyed, the mirrored call rolls it back — verified in both directions
+rather than assumed:
+
+```
+  roll back  -> alias reads 107
+  roll forward -> alias reads 401
+```
+
+```
+  duration_ms >= 800 -> 21 hits
+```
+
+`applogs-000001` sits there holding the pre-restore state until someone is confident enough to
+delete it, which is a decision that can now be taken calmly and separately.
+
 ### What a snapshot does not bring back
 
 ```
@@ -752,6 +828,10 @@ A cluster is only as recoverable as the least reproducible of those four.
 - [x] A restore returns **800 documents**, the `integer` mapping, the write alias and the `rollover_alias` setting
 - [x] `duration_ms >= 800` returns **42** hits after the restore — the data is numerically usable, not merely present
 - [x] The index template and ISM policy do **not** come back, and a restore asking for global state is refused `403`
+- [x] A renamed restore with default alias handling fails `illegal_state_exception` — two write indices for one alias — and leaves **no** partial index
+- [x] With `include_aliases: false` the restored copy (400 docs) and the damaged live index (107 docs) **coexist**, alias unmoved
+- [x] One `_aliases` call swaps reads from **107 to 400** and writes follow to the restored index
+- [x] The mirrored call rolls the swap back, checked in both directions
 - [x] The same cluster shows the dashboard in Global and **not** in Private, from two browser sessions
 - [x] An `ism_template` attaches the policy at index creation, with no per-index step
 - [x] Rollover fires on `min_doc_count` and creates `applogs-000002`
@@ -870,6 +950,31 @@ also how the `aggregatable` flags from earlier get into the UI in the first plac
 **The check that catches all three is rendering the dashboard and reading the panels** — not the
 import response, and not `_find` listing the objects, both of which were happy throughout.
 
+**A renamed restore fails on the alias it is carrying.** The obvious `rename_pattern` call, with
+alias handling left at its default:
+
+```
+  status: 500
+  type:   illegal_state_exception
+  reason: alias [applogs] has more than one write index [applogs-restored-000001,applogs-000001]
+```
+
+The snapshot recorded `applogs` as a **write** alias on `applogs-000001`. Restoring under a new name
+re-attaches it, and an alias may have only one write index. The rename succeeds at renaming the
+index and then trips over the thing it copied along with it. `include_aliases: false` is the fix,
+and it is also the right default for this pattern: **you want the restored index to arrive detached,
+precisely so you can decide when it takes over.**
+
+Worth noting what did *not* happen — the failed restore left no half-made index behind:
+
+```
+  index          docs.count
+  applogs-000001        107
+```
+
+That is the contrast with the delete-first sequence below, where the failure landed after the
+destructive step rather than before it.
+
 **A restore with `include_global_state` is refused, and the error blames the wrong thing.** The same
 user, the same snapshot, one flag apart:
 
@@ -911,7 +1016,8 @@ For the length of that gap the 800 documents existed **only in the snapshot**, b
 came after the delete. Nothing was lost — the retry without the flag restored all 800 — but the
 order is worth stating plainly: **restore into a new index name and swap an alias, or at minimum
 prove the restore works before deleting anything.** `rename_pattern` and `rename_replacement` on the
-restore body exist for exactly this, and are the safer default.
+restore body exist for exactly this, and are the safer default — demonstrated above, where the
+restore and the live index coexisted and the cutover was a single reversible `_aliases` call.
 
 **The ISM history index was never empty — the security plugin was hiding it.** `_ism/explain` showed
 every transition live, while a search of `.opendistro-ism-managed-index-history-*` returned nothing.
@@ -1259,7 +1365,7 @@ data is missing**, and getting used to ignoring it in a lab is how it gets ignor
 - [ ] Put `applogs-objects.ndjson` and the index template in a repository and import both from CI, so a fresh cluster comes up complete without anyone opening the UI
 - [ ] Ship the logs from [[loki-logs-labels-and-cardinality]] into this index and compare what each system makes cheap — labels versus mappings is the same decision made twice
 - [ ] Measure the storage cost of `text` + `.keyword` against plain `keyword` on a corpus big enough to matter
-- [ ] Restore with `rename_pattern`/`rename_replacement` into a new index name and swap the alias, instead of deleting the target first
+- [ ] Script the restore-and-swap as one runbook step with a verification gate between the restore and the `_aliases` call, since the safety comes from the pause rather than from the commands
 - [ ] Point the repository at object storage with the `repository-s3` plugin, which is what a real backup uses and what a bind mount cannot represent
 
 ## Related
