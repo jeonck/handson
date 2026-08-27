@@ -4,12 +4,12 @@ date: 2026-08-27
 domain: install
 tags: [git, self-hosting, postgresql, backup, containers]
 stack: [gitea, postgresql, git, podman, docker-compose]
-summary: Gitea with PostgreSQL, from an empty volume to a pushed repository, then taken apart. Deleting one database row left an intact bare repo on disk that no client could clone — and adopting it back produced repository id 2, with a watch row still pointing at the id that no longer exists.
+summary: Gitea with PostgreSQL, taken apart three ways. Deleting one database row left an intact bare repo that no client could clone; restoring only the database gave a repository the API lists and git cannot fetch; restoring the whole dump reproduced the instance line for line, down to repository id 1.
 source: handson
 env: Gitea 1.24.7 · PostgreSQL 17 (alpine) · git 2.51.0 client · Podman 5.7.1 with docker-compose 5.3.1 · macOS 14.7.5
 verified: 2026-08-27
 verifiability: partial
-verifiability-note: A single Gitea container against one PostgreSQL container over HTTP on loopback, with token auth. Push, clone, on-disk layout, the dump format, database/disk divergence and the adopt recovery path all ran. SSH access, Gitea Actions, LFS, federation, mirroring, HA behind a proxy and a restore from `gitea dump` into a fresh instance are unexercised — the dump was taken and inspected but not replayed.
+verifiability-note: A single Gitea container against one PostgreSQL container over HTTP on loopback, with token auth. Push, clone, on-disk layout, the dump format, database/disk divergence and the adopt recovery path all ran. A dump was taken and restored into a rebuilt instance on the same version, and the database-only variant was tested too. SSH access, Gitea Actions, LFS, federation, mirroring, HA behind a proxy and restoring across a version upgrade are unexercised.
 duration: 45–70 min
 risk: low
 ---
@@ -210,6 +210,100 @@ curl -X POST -H "Authorization: token $ADMIN_TOKEN" \
 **The git data comes back intact.** What comes back with it is the question, and the answer is in
 [Where this bit us](#where-this-bit-us).
 
+## Restoring the dump into an empty instance
+
+Taking a backup and reading it is not testing it. The drill: seed an instance with data that exists
+**only** in the database, dump it, destroy both volumes, and rebuild from the archive.
+
+```
+  repo            : labadmin/app  id=1  stars=1
+  branches        : ['feature/widget', 'main']
+  issues+pulls    : 4  titles=['Add the widget', 'Issue number 1', 'Issue number 2', 'Issue number 3']
+  pull requests   : [(4, 'Add the widget')]
+  comments on #1  : 1
+  releases        : ['v1.0.0']
+  collaborators   : ['contributor']
+  users           : ['contributor', 'labadmin']
+```
+
+**Read that state through the API, not the database**, and use the same reader before and after —
+otherwise "it restored" means "the rows are there", which is not the same claim.
+
+```bash
+podman compose down -v          # both volumes: /data and PostgreSQL
+```
+
+### Order matters: database first, then Gitea
+
+Bring up **only** PostgreSQL, so nothing has created a schema yet:
+
+```bash
+podman compose up -d db
+psql -U gitea -d gitea -f gitea-db.sql
+```
+
+```
+  tables in the fresh database: 0
+  psql errors: 0
+  tables now: 112
+  repository rows: 1
+  issue rows: 4
+```
+
+Then place the files into the empty `/data` volume before Gitea ever starts:
+
+```bash
+podman run --rm -v gitea-lab_gitea-data:/data -v "$PWD/restore:/restore:ro,Z" alpine sh -c '
+  mkdir -p /data/git/repositories /data/gitea/conf
+  cp -a /restore/repos/. /data/git/repositories/
+  cp -a /restore/data/.  /data/gitea/
+  cp -a /restore/app.ini /data/gitea/conf/app.ini
+  chown -R 1000:1000 /data'          # the image runs as uid/gid 1000
+```
+
+```bash
+podman compose up -d gitea
+```
+
+```
+  healthz: 200
+```
+
+### What came back
+
+Same script, same token — the one minted before the dump:
+
+```
+  repo            : labadmin/app  id=1  stars=1
+  branches        : ['feature/widget', 'main']
+  issues+pulls    : 4  titles=['Add the widget', 'Issue number 1', 'Issue number 2', 'Issue number 3']
+  pull requests   : [(4, 'Add the widget')]
+  comments on #1  : 1
+  releases        : ['v1.0.0']
+  collaborators   : ['contributor']
+  users           : ['contributor', 'labadmin']
+```
+
+**Identical, line for line, including `id=1`.** Every issue, the pull request, the comment, the star,
+the release, the collaborator and both users. Compare that with the adopt path earlier on this page,
+which returned the same commits as `id=2` and none of the rest — **restoring the dump is a restore;
+adopting is salvage.**
+
+Git works too:
+
+```
+  cloned: 2 commits, head 9aa8501, branches: origin/main origin/feature/widget
+```
+
+And the sequences follow the data, so the instance is writable rather than merely readable — worth
+checking explicitly, because a SQL restore that leaves sequences behind breaks on the next insert
+rather than at restore time:
+
+```
+  issue: max(id)=4  nextval-would-be=5
+  -> issue #5 created (id=5)
+```
+
 ## Verification checklist
 
 - [x] `GITEA__section__KEY` environment variables configure the instance with no `app.ini` authored by hand
@@ -223,6 +317,11 @@ curl -X POST -H "Authorization: token $ADMIN_TOKEN" \
 - [x] Adopting it restores a cloneable repository at the **same head** (`be50ae7`)
 - [x] The adopted repository is a **new record, `id=2`** — and a `watch` row still points at `repo_id=1`
 - [x] A token without `write:admin` is refused the admin endpoints, naming the required scope
+- [x] Restoring `gitea-db.sql` into an empty database gives **112 tables, 0 psql errors**
+- [x] A full restore reproduces the pre-dump API state **line for line, including `id=1`** — issues, PR, comment, star, release, collaborator, both users
+- [x] The token minted **before** the dump still authenticates afterwards
+- [x] Sequences follow the restored data, so a new issue is created as `#5` rather than colliding
+- [x] Restoring the database **without** the files leaves the API listing a repository that git cannot clone
 
 ## Rollback
 
@@ -231,6 +330,46 @@ podman compose down -v          # containers, the database volume and /data
 ```
 
 ## Where this bit us
+
+**Restoring only the database gives you a catalogue with nothing behind it.** Starting the whole
+stack first and replaying `gitea-db.sql` afterwards is the natural order, and it imports without a
+single error — the xorm dump uses `CREATE TABLE IF NOT EXISTS` and plain inserts, so it lands
+cleanly on the schema Gitea has just created:
+
+```
+  gitea initialised an empty database: 112 tables, 0 repos
+  psql errors: 0
+  repository rows now: 1
+```
+
+And then:
+
+```
+  repositories on disk: 0
+  API says the repo exists:  labadmin/app
+  can git clone it?
+    Please make sure you have the correct access rights and the repository exists.
+   -> clone FAILED
+```
+
+**This is the mirror image of the deleted row above**, and the pair is the whole lesson of the page:
+
+| Restored | API lists the repo | `git clone` |
+|---|---|---|
+| disk only (the orphaned directory) | no | no |
+| database only | **yes** | **no** |
+| both (the full dump) | yes | yes |
+
+The database-only case is the more dangerous of the two, because **the instance looks healthy**. The
+repository is listed, the issues are all there, the users can log in — and the first person to clone
+finds out. A restore that has only been checked in the web UI is a restore that has not been checked.
+
+Two details worth having from that run. The pre-dump token still authenticated against the
+freshly-generated `app.ini`, so token validity did not depend on restoring the config here — do not
+rely on that, but do not panic about it either. And the sequences came across correctly in the good
+restore, so the instance was writable immediately; **a SQL restore that leaves sequences behind fails
+on the next insert rather than at restore time**, which is why the check above creates an issue
+rather than only reading one.
 
 **Adopting recovers the git data and not the repository.** The row that came back is not the row that
 went away:
@@ -290,7 +429,8 @@ incident, and store it where [[vault-secrets-rotation]] argues it should live.**
 
 ## Follow-ups
 
-- [ ] Restore `gitea dump` into an empty instance and confirm issues and pull requests come back — this page took the dump and read it, but never replayed it, which is the half that matters
+- [x] Restore `gitea dump` into an empty instance — done above; everything came back identically, including the repository id
+- [ ] Restore into a **newer** Gitea than the one that produced the dump and watch the migrations run, which is the upgrade path this drill deliberately avoided by keeping both sides on 1.24.7
 - [ ] Repeat the row-deletion test with issues and pull requests attached, and count exactly what adopt loses
 - [ ] Put the repositories on one volume and PostgreSQL on another, then snapshot them at different moments and see what an inconsistent pair does on start-up
 - [ ] Enable Gitea Actions and run a workflow, which is the piece that would replace [[gitlab-ci-argocd-fastapi-procedure]]'s runner
