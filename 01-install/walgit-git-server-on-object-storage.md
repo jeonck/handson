@@ -9,7 +9,7 @@ source: handson
 env: walgit @ 6d8fa54 (2026-08-27) · Rust 1.97 · rustfs (S3-compatible) · git 2.51.0 client · Podman 5.7.1 with docker-compose 5.3.1 · macOS 14.7.5
 verified: 2026-08-27
 verifiability: partial
-verifiability-note: Two walgit instances against one rustfs bucket on a single laptop, token auth, TLS off, over the loopback network. The distributed claim is verified in the sense that matters — a second process with an empty cache serves what the first accepted — but not against real S3, real latency, concurrent writers racing the manifest CAS, or the LFS, bundle-URI, OIDC and web-UI paths. Both upstream bugs were reproduced from a clean clone and diagnosed to a specific line; neither has been reported upstream from here.
+verifiability-note: Two walgit instances against one rustfs bucket on a single laptop, token auth, TLS off, over the loopback network. The distributed claim is verified in the sense that matters — a second process with an empty cache serves what the first accepted — but not against real S3, real latency, concurrent writers racing the manifest CAS, or the LFS, bundle-URI, OIDC and web-UI paths. Both upstream bugs were reproduced from a clean clone, diagnosed to a specific line, and reported as tobi/walgit#21 and #22.
 duration: 60–90 min
 risk: low
 ---
@@ -242,6 +242,8 @@ RUN apt-get install -y --no-install-recommends \
       protobuf-compiler libprotobuf-dev pkg-config cmake perl python3
 ```
 
+Filed upstream as [tobi/walgit#21](https://github.com/tobi/walgit/issues/21).
+
 **A failing build is the good case here** — it stops. The lesson worth keeping is the diagnostic
 shape: *"tool X is installed but its data files are not"* is a whole family of Debian packaging
 surprises, and `dpkg -S` on the missing path settles it in one command.
@@ -286,7 +288,9 @@ tokens = [{ principal = "me", token = "", token_env = "WALGIT_TOKEN_ME", write =
 
 Worth noting *why* this is worth the trouble rather than just writing the literal token: `token_env`
 exists so the secret stays out of the committed file, which is the same argument
-[[vault-secrets-rotation]] makes at length. The bug pushes people toward the insecure form.
+[[vault-secrets-rotation]] makes at length. **The bug pushes people toward the insecure form**, which
+is the wrong way round for a failure to point. Filed upstream as
+[tobi/walgit#22](https://github.com/tobi/walgit/issues/22).
 
 **walgit refuses to start unauthenticated on a public bind, and says exactly why.**
 
@@ -314,7 +318,8 @@ distinction is the difference between a claim that holds and one that has been o
 
 ## Follow-ups
 
-- [ ] Report both bugs upstream with the diagnosis above — the `libprotobuf-dev` line and the `#[serde(default)]` attribute are each a one-line patch
+- [x] Report both bugs upstream — filed as [tobi/walgit#21](https://github.com/tobi/walgit/issues/21) (Containerfile) and [tobi/walgit#22](https://github.com/tobi/walgit/issues/22) (`token_env`), each with a one-line patch
+- [ ] Watch both issues and update this page if the fixes land, since the `token = ""` workaround should then be removed from the config above
 - [ ] Run two instances against **real S3** rather than rustfs, where request latency and consistency behaviour are not a loopback socket
 - [ ] Race two concurrent pushes to the same ref across both instances and watch the manifest CAS reject one — the consensus claim this page takes on trust
 - [ ] Exercise bundle-URI clones and confirm a large clone is served from static objects rather than `upload-pack`
