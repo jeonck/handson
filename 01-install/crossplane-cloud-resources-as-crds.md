@@ -248,7 +248,7 @@ awslocal s3 mb s3://probe-bucket
 make_bucket: probe-bucket
 ```
 
-Enabling `iam`, removing `iam`, and setting `S3_SKIP_SIGNATURE_VALIDATION=1` all left it unchanged.
+Enabling `iam`, removing `iam`, and setting `S3_SKIP_SIGNATURE_VALIDATION=1` all left it unchanged. [[localstack-local-aws-and-its-limits]] later narrowed it further: LocalStack accepts any credential pair and even an empty access key, so credential *validation* is not what rejected this.
 **The bucket never reached `Ready` and this page does not pretend otherwise.** What it does establish
 is that everything up to the S3 call works, so the remaining variable is LocalStack's S3 credential
 emulation against a signed request from the upjet provider rather than anything in the Crossplane
@@ -275,7 +275,7 @@ cluster condition.
 
 ## Follow-ups
 
-- [ ] Settle the LocalStack `InvalidAccessKeyId` — try an older LocalStack, or the non-upjet `provider-aws`, to isolate whether the signed request or the emulator is at fault
+- [ ] Settle the LocalStack `InvalidAccessKeyId` — [[localstack-local-aws-and-its-limits]] rules out the credential values, an empty key and signature verification, so capture the provider's actual HTTP request and replay it with `curl`
 - [ ] Build an XRD and a Composition so one claim produces several managed resources, which is the abstraction Crossplane exists for and this page only names
 - [ ] Set `spec.managementPolicies` to `["Observe"]` and confirm a resource can be adopted without being modified — the safe way to bring existing cloud resources under management
 - [ ] Shorten the provider poll interval and measure how the drift-correction window changes against API call volume
