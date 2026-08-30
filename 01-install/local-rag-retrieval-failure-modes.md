@@ -1,21 +1,21 @@
 ---
-title: Local RAG — the answer it built out of an unchecked to-do
+title: Local RAG — two checkbox lines, one answered as a procedure and one as a fact
 date: 2026-08-28
 domain: install
 tags: [rag, llm, embeddings, retrieval, evaluation]
 stack: [ollama, bge-m3, chromadb, streamlit, python]
-summary: A RAG over this repository's own 64 documents, run entirely on a laptop. Asked something the corpus does not answer, it retrieved a Follow-ups section — an unchecked to-do — and returned it as a four-step procedure, at a distance closer than real questions score. The same retrieval with one extra prompt line answers "I don't know".
+summary: A RAG over this repository's own 64 documents, run entirely on a laptop. Both of its worst answers are a checkbox line lifted out of a document — an unchecked to-do returned as a four-step procedure, and a checked verification line returned as the answer to a different question, the second one surviving the "reply I don't know" instruction that fixes the first.
 source: handson
-env: Ollama 0.31.1 · bge-m3 (1024-dim) · all-minilm (384-dim) · llama3.2:3b · Chroma 1.5.9 (cosine) · Streamlit 1.62 · Python 3.13 · macOS 14.7.5 on M1 Pro / 16 GB
+env: Ollama 0.31.1 · bge-m3 (1024-dim) · all-minilm (384-dim) · llama3.2:3b · gemma3:4b · Chroma 1.5.9 (cosine) · Streamlit 1.62 · Python 3.13 · macOS 14.7.5 on M1 Pro / 16 GB
 verified: 2026-08-28
 verifiability: partial
-verifiability-note: Every distance, chunk count and answer below was produced on this machine against this repository as the corpus, so the retrieval findings are reproducible but corpus-specific — the exact numbers will differ on other documents. Generation was verified with llama3.2:3b; gemma3:4b was the intended chat model and its download did not finish in the session, so the generation half is unverified on that model. Reranking, hybrid search and a labelled evaluation set are all absent, and the sample of 20 questions is far too small to tune a threshold on.
-duration: 60–90 min
+verifiability-note: Every distance, chunk count and answer below was produced on this machine against this repository as the corpus, so the findings are reproducible but corpus-specific — the numbers will differ on other documents. Generation was measured on two models over three questions, which is enough to show the failures are model-dependent and not enough to rank the models. Reranking, hybrid search and a labelled evaluation set are all absent, and 20 questions is far too few to tune a threshold on.
+duration: 90–120 min
 risk: low
 ---
 
-> **Verified 2026-08-28.** The screenshots are the running application, not mock-ups. The answer in
-> the first one is built from a line of this repository that says the work was never done.
+> **Verified 2026-08-28.** The screenshots are the running application. Both failures on this page are
+> a Markdown checkbox line pulled out of a document that meant something else by it.
 
 RAG is usually presented as a way to ground a model in your documents. **The interesting question is
 what it does when your documents do not contain the answer**, because the retriever will return
@@ -92,9 +92,9 @@ questions that name tools the corpus *does* cover destroyed the separation. **Th
 break a similarity threshold are the plausible ones**, and a test set without them will tell you your
 threshold works.
 
-## What it does with a question it cannot answer
+## The first checkbox: `- [ ]` answered as a procedure
 
-<img src="/01-install/img/rag-fabricated-from-a-todo.png" width="620" alt="The RAG UI answering a question about Argo CD SSO with Okta: it says the answer is not explicitly stated, then gives four numbered steps, and the retrieved chunk below is the Follow-ups section of the Argo CD document">
+<img src="/01-install/img/rag-fabricated-from-a-todo.png" width="620" alt="The RAG UI answering a question about Argo CD SSO with Okta on llama3.2: it says the answer is not explicitly stated, then gives four numbered steps, and the retrieved chunk below is the Follow-ups section of the Argo CD document">
 
 Read the answer and then read the chunk it came from.
 
@@ -121,7 +121,80 @@ the question — and then answers anyway. The hedge is what makes it dangerous: 
 being careful, and a reader who skims one sentence to reach the numbered list gets a fabricated
 runbook with real component names in it.
 
-### It also defeated the check I wrote to catch it
+### That is llama3.2, not RAG
+
+The same question, the same chunk, `gemma3:4b`:
+
+> The context does not provide instructions on how to configure Argo CD SSO with Okta. **It mentions
+> that OIDC (SSO) is a follow-up item to be wire up**, but the timeline for this is "📅 2026-08-21"
+> and no details are given about the implementation.
+
+**gemma3 read the checkbox as a checkbox.** It found the same line, recognised what it was, said so,
+and stopped — without being told it was allowed to. Identical retrieval, opposite outcome, so the
+failure above is a property of the generator, not of the corpus or the pipeline.
+
+Across three out-of-corpus questions on the plain prompt:
+
+```
+  question                         llama3.2:3b            gemma3:4b
+  Argo CD SSO with Okta            fabricated, 841 ch     refused, named the to-do, 242 ch
+  Vault AWS auth role TTL          refused, 306 ch        refused, 267 ch
+  Prometheus sharding with Thanos  fabricated, 958 ch     hedged then drifted, 998 ch
+```
+
+The third row is its own category. gemma3 opens *"Based on the provided context, here's how you can
+shard Prometheus with Thanos"*, immediately concedes there is no direct answer, and then lists
+exemplar configuration under that promise. **Neither a refusal nor an answer**, and the opening
+sentence is what a reader remembers.
+
+**Answer length is the one signal that held.** Every genuine refusal came in under 310 characters and
+every fabrication ran past 840. Three questions on two models is not a rule — but it is a better
+discriminator than distance was, and it costs nothing to log.
+
+## The escape hatch, and the second checkbox
+
+<img src="/01-install/img/rag-refusal-same-context.png" width="620" alt="The same Argo CD SSO question and the same retrieved chunk at distance 0.4315, with the allow I don't know option enabled, and the answer is simply I don't know">
+
+```python
+PROMPT_STRICT = """Answer the question using ONLY the context below.
+If the context does not contain the answer, reply exactly: I don't know.
+```
+
+**Same question, same retrieval, same chunk at `0.4315`** — the two screenshots show the identical
+source and distance. Only the prompt differs, and llama3.2's four-step procedure becomes:
+
+```
+I don't know.
+```
+
+Retrieval was never the variable. **The model was willing to abstain and had not been told it was
+allowed to**, which is cheaper than any amount of threshold tuning and belongs in the default prompt.
+
+It is also not a fix. Six strict runs — three questions on two models — and **five returned exactly
+`I don't know`. This is the sixth:**
+
+<img src="/01-install/img/rag-escape-hatch-leaks.png" width="620" alt="The Thanos sharding question on gemma3 with the I don't know option enabled, answered with a statement about Prometheus exemplar counts, retrieved from the Prometheus daily note at distance 0.4465">
+
+> Prometheus stores **0** exemplars without `--enable-feature=exemplar-storage` and **8** with it —
+> checked both ways
+
+**That is a verification-checklist line, copied verbatim** from [[grafana-correlate-three-signals]] —
+including the trailing "checked both ways", which is that document telling its reader how the item was
+proven. Every word of it is true and it was measured. It is also not about Thanos, not about sharding,
+and not an answer to the question on screen.
+
+So both failures on this page are the same move on a different box. **An unchecked `- [ ]` became a
+procedure; a checked `- [x]` became an answer.** A checklist line is written to be read next to its
+heading and its document; pulled into a context window it is a short, confident, well-formed sentence
+with no marker saying which question it was the answer to.
+
+The instruction offered two options — answer, or say `I don't know` — and the model took a third:
+**answer a question the context does answer.** That is harder to catch than the first failure. There
+is no hedge to notice and nothing wrong to verify. **A reader who checks the claim will find it
+correct** and carry away that they asked about sharding and got a fact about exemplars, which reads as
+their own misunderstanding rather than the system's.
+
+### The refusal detector was wrong in both directions
 
 The first pass at measuring this scanned answers for refusal phrases:
 
@@ -132,34 +205,14 @@ refused = any(s in a.lower() for s in
 ```
 
 ```
-  Q: How do I configure Argo CD SSO with Okta?
-  refused: True
-  answer: The answer is not explicitly stated in the provided context. However, …
+  llama3.2  Argo CD SSO      refused=True   841 ch   <- fabrication, scored as a refusal
+  llama3.2  Thanos sharding  refused=False  958 ch   <- fabrication, scored correctly
 ```
 
-**`refused: True`, for the answer above.** The detector matched the hedge and never looked at what
-followed it. A refusal check that greps for apologetic language measures politeness, not abstention —
-which is the same shape of false pass as the `SYNCED=True` in [[crossplane-cloud-resources-as-crds]].
-
-## The fix is one line of prompt, and it works
-
-<img src="/01-install/img/rag-refusal-same-context.png" width="620" alt="The same question and the same retrieved chunk at distance 0.4315, with the allow I don't know option enabled, and the answer is simply I don't know">
-
-```python
-PROMPT_STRICT = """Answer the question using ONLY the context below.
-If the context does not contain the answer, reply exactly: I don't know.
-```
-
-**Same question, same retrieval, same chunk at `0.4315`** — the screenshots show the identical
-source and distance. Only the prompt differs, and the answer becomes:
-
-```
-I don't know.
-```
-
-Retrieval was never the variable. **The model was willing to abstain and had not been told it was
-allowed to**, which is a cheaper fix than any amount of threshold tuning and should be the default
-rather than an option.
+**Two fabrications of the same shape, scored opposite ways** — both open by admitting the context does
+not cover the question, and only one happens to phrase it with a word on the list. The detector was
+sorting on phrasing and never on whether an answer followed. Same false-pass shape as the
+`SYNCED=True` in [[crossplane-cloud-resources-as-crds]].
 
 ## Two more measurable differences
 
@@ -202,9 +255,12 @@ usefulness are not the same axis, and nothing in the scores tells you which chun
 - [x] Indexing the same 1078 chunks takes **183s** with bge-m3 and **18s** with all-minilm
 - [x] Across 20 questions the in-corpus and out-of-corpus distance ranges **overlap** — 0.323–0.489 against 0.432–0.504
 - [x] Three out-of-corpus questions score closer than three in-corpus ones, so **no cutoff separates them**
-- [x] An out-of-corpus question produces a four-step procedure built from an **unchecked `- [ ]` to-do**
-- [x] A keyword-based refusal detector marks that fabricated answer as `refused: True`
+- [x] On the plain prompt, `llama3.2:3b` answers the Argo CD SSO question with a four-step procedure built from an **unchecked `- [ ]` to-do**
+- [x] On the same prompt and the same chunk, `gemma3:4b` **identifies that line as a follow-up item** and declines — the failure is model-dependent
+- [x] Of six plain-prompt runs, **two fabricated, one hedged then drifted, three refused**; every refusal was under 310 characters and every fabrication over 840
 - [x] Adding one line to the prompt returns `I don't know.` for the **same question and the same retrieved chunk at 0.4315**
+- [x] That line works in **five of six** strict runs; on the sixth, `gemma3:4b` answers the Thanos question with a **`- [x]` verification line copied verbatim** from another document
+- [x] The keyword refusal detector scores **two fabrications of the same shape in opposite directions**
 - [x] A Korean question retrieves the correct English document with bge-m3, and pulls in a wrong document at rank 2 with all-minilm
 - [x] The 1200-char index ranks first a chunk without the answer; the 300-char index surfaces the answering line at rank 3
 
@@ -213,7 +269,7 @@ usefulness are not the same axis, and nothing in the scores tells you which chun
 ```bash
 pkill -f "streamlit run app.py"
 rm -rf chroma .venv
-ollama rm bge-m3 all-minilm      # keep the chat model if you use it elsewhere
+ollama rm bge-m3 all-minilm      # keep the chat models if you use them elsewhere
 ```
 
 ## Where this bit us
@@ -224,33 +280,49 @@ about tools the corpus never mentions. **A retrieval test set is only as good as
 and the hardest negatives are questions about the exact tools you documented, asking the one thing you
 did not write down. That is also what real users ask.
 
-**Follow-ups and to-do lists are the most dangerous text in a corpus.** Every document in this
-repository ends with unchecked boxes describing work that was explicitly *not* done. To an embedder
-they are topical, well-formed, on-subject prose about the thing you asked; to a generator they are
-instructions. **The corpus is full of confident sentences about things that never happened**, and
-nothing in the chunk marks them as aspirational. Excluding `## Follow-ups` sections at ingest time
-would have prevented the headline failure on this page — which is a corpus-specific fix, and the
-general lesson is to look at what your documents contain that is *shaped* like an answer without
-being one.
+**This page had to be rewritten after the second model finished downloading.** The first version was
+built on `llama3.2:3b` alone and stated as a property of RAG that the model turns to-do items into
+procedures, and as a fix that one prompt line stops it. **gemma3:4b disproved the first claim and the
+sixth strict run disproved the second** — on the same corpus, the same index, the same chunks. A
+single-model result reads exactly like a general one, because nothing in it is marked as
+model-specific. Any conclusion here about generation behaviour is a claim about the model that
+produced it.
+
+**A checkbox is the most dangerous line in a corpus, in both states.** Every document in this
+repository ends in unchecked boxes describing work that was explicitly not done, and contains checked
+ones asserting facts about a specific setup. To an embedder both are topical, well-formed, on-subject
+prose; in a context window both are short confident sentences stripped of the heading that gave them
+their meaning. `- [ ]` says *not done* and `- [x]` says *proven, of this document's question* — and
+neither marker survives the trip. Dropping `## Follow-ups` at ingest would have prevented the first
+failure and done nothing about the second, because the second line is one the document was right to
+write.
+
+**An escape hatch stops the model inventing, not the model drifting.** `reply exactly: I don't know`
+gives a model two doors, and its worst output was neither: a correct, sourced fact answering a
+question nobody asked. Refusal instructions constrain what an answer may be built from — they say
+nothing about whether it addresses the question, and no amount of tightening that sentence would have
+caught this one.
 
 **Distances are not comparable across embedding models, and the numbers invite it.** bge-m3's 0.44
-and all-minilm's 0.65 in the cross-lingual test above are not on the same scale — they come from
-different vector spaces. Displaying both as "distance" in the same UI, as this lab's app does, makes
-the comparison look meaningful when only the *ranking within one model* is. Any threshold tuned on one
-model is meaningless the moment the model changes, which is a second reason the threshold approach is
-fragile.
+and all-minilm's 0.65 above are not on the same scale — different vector spaces. Displaying both as
+"distance" in the same UI, as this lab's app does, makes the comparison look meaningful when only the
+*ranking within one model* is. A threshold tuned on one embedder is meaningless the moment it changes,
+which is a second reason the threshold approach is fragile.
 
 ## Follow-ups
 
-- [ ] Re-run the generation half on `gemma3:4b` — it was the intended chat model and its 3.3 GB pull did not finish here, so every generated answer on this page is `llama3.2:3b`
-- [ ] Exclude `## Follow-ups` and other unchecked-box sections at ingest and re-ask the Argo CD SSO question, to confirm the headline failure is corpus-shaped rather than model-shaped
+- [ ] Score answers for whether they address the question, not whether they refuse — the exemplar leak passes every check on this page except a human reading it
+- [ ] Log answer length next to every response and see whether the under-310 / over-840 split holds past three questions, since it is currently the only signal that separated refusals from fabrications
+- [ ] Try carrying each chunk's heading path into the context so a `- [x]` arrives labelled as a verification line rather than as a free-standing sentence
+- [ ] Exclude `## Follow-ups` at ingest and re-ask the Argo CD SSO question on `llama3.2:3b`, to confirm the first failure is corpus-shaped
 - [ ] Add a reranker over the top 20 and see whether it separates the adjacent out-of-corpus questions that distance alone cannot
-- [ ] Build a labelled set of 100+ questions with known answers, since 20 is far too few to conclude anything about a threshold — including the conclusions above
+- [ ] Build a labelled set of 100+ questions with known answers — 20 questions and 3 generation prompts is too few to conclude anything, including the conclusions above
 - [ ] Try hybrid retrieval (BM25 + dense) on the exact-string questions like `or vector(0)`, which scored worst of all in-corpus questions at 0.489
 - [ ] Measure how often the strict prompt refuses a question the corpus *does* answer — this page never checked the cost of the fix
 
 ## Related
 
+[[grafana-correlate-three-signals]] — the document whose verification line became an answer to someone else's question.
 [[markitdown-document-to-markdown]] — turning documents into the Markdown this corpus is made of.
 [[litellm-streamlit-chat]] — the same Streamlit shape, against a hosted model instead of a local one.
 [[pydantic-ai-structured-output]] — forcing a model to answer in a checkable shape, which is the other half of trusting output.
