@@ -9,7 +9,7 @@ source: handson
 env: kind 0.32.0 on Podman 5.7.1 (applehv, 4 CPU / 6 GiB) · Kubernetes 1.36.1 · containerd 2.3.1 · arm64 · redis 8.10.1 · valkey 8.1.10 · dragonfly df-v1.40.1
 verified: 2026-08-31
 verifiability: partial
-verifiability-note: One single-node arm64 kind cluster with 4 cores, so nothing here measures throughput — which is the entire reason Dragonfly exists, and four cores in a VM cannot settle it. Replication, failover, cluster mode and snapshot-format interop between engines are all unexercised; the RDB test used one engine's own file.
+verifiability-note: One single-node arm64 kind cluster with 4 cores. A throughput benchmark was attempted and is reported below as a failed measurement, not a result — host load moved between 19.6 and 130.6 during the run and the single-threaded control responded 1.61x to a CPU limit it cannot use, so no engine ranking here is trustworthy. Only the pipelining effect survived the noise. Replication, failover, cluster mode and snapshot-format interop between engines are all unexercised; the RDB test used one engine's own file.
 duration: 90–120 min
 risk: low
 ---
@@ -287,6 +287,77 @@ directly at 100 ms through a 41.7 MB / 2 M-key restart:
 because it passes during load did not reproduce here. Recorded because a check that *does* fail when
 it should is worth knowing about as much as one that does not.
 
+## 7. The benchmark, and why it produced nothing rankable
+
+Compatibility is settled above. Throughput is the claim people actually choose on, so it was measured:
+48 samples, four repetitions, both pipeline depths, `cpu: "2"` and `cpu: "4"` **interleaved** inside
+each repetition, each engine deployed alone with the others deleted.
+
+```bash
+kubectl exec bench -- redis-benchmark -h <ENGINE> -t set,get -n 200000 -c 50 -P <1|16> -d 100 --threads 4 -q
+```
+
+```
+### pipeline P=1  (4 reps, requests/sec)
+  engine     cpu    SET med        SET spread       GET med        GET spread
+  redis      2       38,530  35,248–59,988          38,425  21,501–40,306
+  redis      4       36,256  21,508–49,044          59,692  28,121–98,425
+  valkey     2       39,298  28,325–43,840          42,244  27,640–77,340
+  valkey     4       34,148  27,929–44,218          29,584  21,690–49,140
+  dragonfly  2       15,437  12,460–36,252          18,388  14,539–41,528
+  dragonfly  4       19,684  14,158–22,704          22,998  19,309–25,870
+
+### pipeline P=16  (4 reps, requests/sec)
+  redis      2      245,554 128,700–397,614        292,108 198,413–796,813
+  redis      4      394,502 191,939–790,514        394,107 264,901–790,514
+  valkey     2      330,863 264,550–778,210        311,782 260,417–399,202
+  valkey     4      322,791  76,540–398,406        331,654 252,844–800,000
+  dragonfly  2      221,986  71,073–383,142        193,012 128,370–220,994
+  dragonfly  4      192,771 157,480–396,040        224,817 177,936–259,740
+
+  host load average during the run: 19.6 – 130.6   (8-core machine)
+```
+
+**Do not read a ranking out of that table.** The control says you cannot:
+
+```
+  cpu=2 -> cpu=4 median ratio   (single-threaded engines should be ~1.00)
+  P=16  redis      1.61x
+  P=16  valkey     0.98x
+  P=16  dragonfly  0.87x
+```
+
+**Redis executes commands on one thread. Raising its CPU limit from 2 to 4 cannot make it 61% faster**
+— so that 1.61x is measurement noise, and noise of that size is larger than any difference between the
+three engines in the table above it. Individual spreads confirm it: Redis `P=16` GET ranges 198k–797k
+across four runs of an identical configuration, a factor of four.
+
+The cause is in the last line of the block: **the host ran between load 19.6 and 130.6 on eight
+cores**, driven by the browsers and desktop applications that were open the whole time. Those cannot be
+turned off — it is someone's working machine — and this is what benchmarking on one looks like.
+
+An earlier run made it worse by running all of `cpu=2` before all of `cpu=4`, so load drift over time
+appeared as a CPU effect and *every* engine, single-threaded ones included, looked slower with more
+CPU. Interleaving the conditions fixed that particular artefact and did not rescue the measurement.
+
+### What did survive
+
+One effect is larger than the noise, in the same direction, in all six engine-and-CPU combinations:
+
+```
+  redis     cpu=2   38,530 -> 245,554    6.4x
+  redis     cpu=4   36,256 -> 394,502   10.9x
+  valkey    cpu=2   39,298 -> 330,863    8.4x
+  valkey    cpu=4   34,148 -> 322,791    9.5x
+  dragonfly cpu=2   15,437 -> 221,986   14.4x
+  dragonfly cpu=4   19,684 -> 192,771    9.8x
+```
+
+**Pipelining is worth 6–14x, and it is worth more than the choice of engine.** That result holds
+because it is consistent across every configuration and because its size dwarfs the spread, which is
+exactly what the ranking claims cannot say for themselves. If a workload here is slow and unpipelined,
+`-P` is a larger lever than any migration on this page.
+
 ## Verification checklist
 
 - [x] All three Deployments are created from one `base.yaml` with only image and args substituted
@@ -305,6 +376,11 @@ it should is worth knowing about as much as one that does not.
 - [x] `maxmemory-policy` is `noeviction` by default and `evicted_keys` stays `0`
 - [x] A write probe returns `FAIL` in the state where the ping probe returns `PASS`
 - [x] During RDB load `PING` returns `LOADING`, **not** `PONG` — the expected false pass did not occur
+- [x] 48 benchmark samples were collected with the CPU conditions interleaved and host load recorded per sample
+- [x] Host load moved between **19.6 and 130.6** on 8 cores during the run
+- [x] Single-threaded Redis shows a **1.61x** median change from a CPU limit it cannot use — the control that invalidates the ranking
+- [x] An identical Redis `P=16` GET configuration spans **198k–797k** across four runs
+- [x] Pipelining `P=1 -> P=16` gives **6–14x in all six** engine-and-CPU combinations, the one effect larger than the noise
 
 ## Rollback
 
@@ -332,14 +408,27 @@ built on `redis.call('SET', ...)` silently wrote nothing to Dragonfly and left `
 ceiling and reported success anyway. The failure was only visible by reading `DBSIZE` back, which is
 worth remembering for any bulk load: **the return value describes the request, not the outcome.**
 
-**Nothing here says which engine is faster, and the interesting claim is exactly that one.**
-Dragonfly's reason to exist is multi-threaded throughput, and a 4-core arm64 VM running all three
-side by side cannot measure it. This page settles compatibility and Kubernetes behaviour; anyone
-choosing on performance still has that work in front of them.
+**Three separate instrument bugs each produced a clean, plausible, completely wrong table.** After the
+`IFS` and `${@:2}` failures above, the benchmark harness returned `NA` for all 36 samples because
+`redis-benchmark -q` still emits progress lines terminated by `\r`; `tr -d '\r'` glued them onto the
+summary line, so `grep '^SET'` matched nothing. The diagnostic run before it had worked only because
+it used `-t set` alone and grepped for the number anywhere in the output. **The pattern across all
+three is the same** — the harness produced well-formed output that no one had checked against a known
+answer. The fix each time was one known-good and one known-bad probe before trusting anything, and
+it belongs at the top of a measurement script rather than three failures into one.
+
+**The benchmark ran and could not answer the question, which is a result worth writing down.**
+Dragonfly's reason to exist is multi-threaded throughput; a machine at load 130 cannot measure it, and
+the proof is the single-threaded control moving 61%. The temptation was to publish the medians anyway
+— they are tidy, they look like a ranking, and nobody reading the table would know. **What stopped it
+was including a control that could fail**, the same discipline this repository applies to verification
+checks. Anyone choosing between these three on performance still has that work in front of them, and
+now knows what it needs: a quiet machine, not a better script.
 
 ## Follow-ups
 
-- [ ] Benchmark the three on a machine with enough cores to make Dragonfly's threading meaningful — 4 cores in a VM proves nothing either way
+- [ ] Re-run the benchmark on an idle machine — the harness and interleaved design are ready, the host was not; treat any run whose single-threaded control moves more than a few percent as void
+- [ ] Measure at higher connection counts and larger payloads, since `-c 50 -d 100` is one point in a space where the engines are supposed to diverge
 - [ ] Replace the `PING` probe with a `startupProbe` for load plus a memory-ceiling alert, and check whether that pair catches both states without writing on every interval
 - [ ] Test whether Valkey can load a Redis-written RDB and vice versa — the migration question this page never touched
 - [ ] Run replication and failover across the three, since `REPLICAOF NO ONE` returning `OK` on all three is the shallowest possible evidence
