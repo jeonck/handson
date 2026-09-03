@@ -142,8 +142,8 @@ to get wrong under time pressure.
   etcd pod           : 1/1 Running
 ```
 
-**All three are true of a cluster that ignored your snapshot entirely.** They say etcd is serving, not
-that it is serving the data you restored.
+**Skip the restore completely and these three lines look exactly the same.** They prove etcd is
+running. They do not tell you which data it loaded.
 
 ### The check that can fail
 
