@@ -237,9 +237,9 @@ The cluster is disposable — nothing here persists or costs anything once delet
 
 **`SetWeight` and `ActualWeight` are the entire signal for "is the canary actually working," and
 they are easy to conflate while reading quickly.** Both numbers show `100` on a fully healthy
-rollout and both show the same value at each successful step, which is exactly what makes the one
-case where they *diverge* — a broken canary stuck below its target weight — easy to miss on a
-glance rather than a read.
+rollout, and both show the same value at each successful step. They differ in exactly one situation:
+a broken canary stuck below its target weight. Because they agree every other time, that one case is
+the easiest to skim past.
 
 **A rollout with no `AnalysisTemplate` does not roll itself back.** `Status: Progressing` on a
 canary stuck on `ErrImagePull` is a permanent state, not a transient one — Argo Rollouts scaled the

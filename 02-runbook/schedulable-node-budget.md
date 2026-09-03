@@ -122,8 +122,8 @@ You can raise the budget by removing the control-plane taint:
 kubectl taint nodes <CP_NODE> node-role.kubernetes.io/control-plane:NoSchedule-
 ```
 
-The command reverses cleanly. **What does not reverse is what gets scheduled in the meantime** —
-put the taint back and every pod that landed on the control plane is evicted at once, which on a
+The command reverses cleanly. **The pods scheduled while it was off do not.** Put the taint back
+and every pod that landed on the control plane is evicted at once, which on a
 three-machine cluster means the remaining two absorb all of it.
 
 The sources do not agree on what to do here, and this is the decision to make deliberately:

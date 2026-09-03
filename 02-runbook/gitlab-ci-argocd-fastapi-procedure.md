@@ -640,8 +640,8 @@ E... failed to authorize: failed to fetch anonymous token: ... 403 Forbidden
 **This `403` is the pass condition for this specific check, not a failure.** `crictl pull` with no
 credentials hits the same anonymous-pull rejection any unauthenticated client gets against a
 Private GitLab project — it proves containerd is now resolving the registry over plain HTTP
-(compare against the error in 6.1's absence: `http: server gave HTTP response to HTTPS client`,
-which is what a still-broken config produces here instead). The kubelet's actual pull, a few steps
+(a still-broken config fails differently here, with the 6.1 error:
+`http: server gave HTTP response to HTTPS client`). The kubelet's actual pull, a few steps
 below, carries the `imagePullSecrets` credentials from step 5.3 and gets past this same check.
 
 **Do not "confirm" this with `ctr images pull --hosts-dir <dir> ...`.** Passing `--hosts-dir`

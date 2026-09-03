@@ -121,7 +121,7 @@ kubectl -n longhorn-system get backuptargets.longhorn.io default \
   -o jsonpath='{.status.available}{"\t"}{.status.conditions[*].message}{"\n"}'
 ```
 
-The pass condition is `.status.available` equal to `true`. Anything else — including an empty value, which is what an unreachable endpoint tends to produce — means the credentials, the endpoint, or the bucket is wrong, and the message says which.
+The pass condition is `.status.available` equal to `true`. Anything else means the credentials, the endpoint, or the bucket is wrong, and the message says which. An unreachable endpoint usually leaves the field empty rather than `false`.
 
 > **Expected output that looks wrong:** immediately after configuring the target, `kubectl -n longhorn-system get backups` prints nothing. That is correct — there are no backups yet, and Longhorn only lists what it finds in the target. An empty list is also what an unreachable target produces, which is exactly why `.status.available` above is the check and this is not.
 

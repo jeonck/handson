@@ -1405,8 +1405,8 @@ at all. Compare the same queries once the field is `integer`:
 
 Not one of the four agrees. **The aggregation failure earlier was a gift** — it stopped and told you
 the field was the wrong type. The range query has exactly the same underlying problem and answers
-anyway, which is why the check that matters here is not "does the query run" but "does a threshold
-you can reason about return the documents you can count by hand."
+anyway. So "does the query run" proves nothing here. Pick a threshold whose answer you already
+know, count the matching documents by hand, and check that the query returns that number.
 
 **An index template does nothing to indices that already exist.** After `acknowledged: true`:
 

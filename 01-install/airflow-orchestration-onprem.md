@@ -74,9 +74,9 @@ Count what each executor asks for. These are pod counts read off the chart, not 
 | `statsd` | enabled by default in both — `statsd.enabled: true` | same |
 
 **Recommendation for this cluster: `CeleryExecutor` with exactly one worker.** Two nodes with ~8 GB
-between them cannot absorb an unbounded number of task pods, and KubernetesExecutor's whole value —
-per-task isolation, per-task images, workers that exist only while a task runs — is value you buy
-with *spare scheduling capacity*, which is precisely what is missing here. With one resident worker
+between them cannot absorb an unbounded number of task pods. KubernetesExecutor pays for its
+benefits — per-task isolation, per-task images, workers that exist only while a task runs — with
+*spare scheduling capacity*. This cluster has none to spend. With one resident worker
 you size the memory ceiling once, at install, and the number of concurrent tasks is a number you
 chose rather than a race between Airflow and whatever else wants to schedule.
 

@@ -323,10 +323,10 @@ rate(http_requests_total[24h])  ->  0.020 /s
 
 **A rate over a window longer than the available history is diluted in proportion to the window**,
 because the increase is divided by the full window duration regardless. The 24h figure is 288× low.
-That does *not* corrupt the SLIs — the dilution cancels between numerator and denominator of a ratio,
-which is a good reason SLOs are defined as ratios — but any panel or alert using an **absolute** rate
-over a long window is badly wrong for the first day of a cluster's life, and reads reassuringly low
-rather than obviously broken.
+The SLIs survive this: a ratio divides one diluted number by another and the dilution cancels, which
+is a good reason to define SLOs as ratios. Panels and alerts that use an **absolute** rate over a long
+window do not survive it. On a cluster's first day they are badly wrong, and they are wrong in the
+quiet direction — reassuringly low rather than obviously broken.
 
 **The error-budget expression is unbounded below and will happily render −22.88.**
 

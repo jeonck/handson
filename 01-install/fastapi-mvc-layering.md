@@ -434,8 +434,8 @@ content-type: application/json
 ```
 
 The body is **zero bytes** — verified with `-w '%{size_download}'`, not eyeballed. `status_code=204`
-in the decorator plus a handler that returns `None` is what produces that; a handler that returned
-the deleted row with `204` would be sending a body the status code promises is absent, which is the
+in the decorator plus a handler that returns `None` is what produces that. A handler that returned
+the deleted row with `204` would send a body, and `204` promises there is none. That mismatch is the
 usual way this endpoint gets written wrong.
 
 > **Expected output that looks wrong:** the `204` still carries `content-type: application/json`,

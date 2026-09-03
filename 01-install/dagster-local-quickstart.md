@@ -256,8 +256,8 @@ browser in the loop — the same principle [[bruno-api-client]] applies to `hell
 
 **Run history disappears silently without `DAGSTER_HOME`.** Nothing errors, nothing warns at the
 point it matters — `dagster run list` just returns nothing, which reads as "no runs happened" rather
-than "no runs were recorded." The pipeline's actual output (the JSON files) is real either way; only
-Dagster's own bookkeeping about the run — timing, logs, status — is what's ephemeral. Set
+than "no runs were recorded." The pipeline's actual output (the JSON files) is real either way. What
+disappears is only Dagster's own record of the run: timing, logs, status. Set
 `DAGSTER_HOME` before the first real run, not after noticing history is missing.
 
 **Every CLI command exercised here prints a `SupersessionWarning` pointing at a tool that is not
