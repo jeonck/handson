@@ -522,6 +522,9 @@ outcomes still works when you predicted the wrong one**, and one designed to con
 
 ## Related
 
+[[cka-exam-first-three-minutes]] — the shell setup and generated YAML to have in place before task one.
+[[cka-workloads-scheduling-drills]] — rollouts, resource pressure, taints and static pods, in the same paired-check shape.
+[[cka-services-ingress-storage-drills]] — Services with no endpoints, an Ingress with no listener, a PVC with no data.
 [[valkey-redis-dragonfly-on-kubernetes]] — a Ready pod refusing every write: the same stale-signal shape as section 5.
 [[pod-crashloopbackoff]] — the other direction of pod troubleshooting, where the status is honest and the cause is not.
 [[k8s-node-drain-replace]] — draining a node deliberately, rather than discovering one that stopped reporting.
