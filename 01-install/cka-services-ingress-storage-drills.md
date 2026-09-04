@@ -1,10 +1,10 @@
 ---
-title: CKA service, ingress, storage and DNS drills — four objects that exist, report healthy, and carry nothing
+title: CKA service, ingress, storage and DNS drills — five faults that every status column calls healthy
 date: 2026-09-04
 domain: install
 tags: [kubernetes, cka, certification, networking, storage]
 stack: [kubernetes, kind, ingress-nginx, kubectl, podman]
-summary: A Service with a mistyped selector is indistinguishable from a working one in kubectl get svc, a Bound PVC mounts cleanly on a second node with the data missing, an Ingress with a Running controller answered nothing until it was moved to the node holding the port, and with CoreDNS scaled to zero every DNS object still reads healthy.
+summary: A Service with a mistyped selector is indistinguishable from a working one in kubectl get svc, a Bound PVC mounts cleanly on a second node with the data missing, an Ingress with a Running controller answered nothing until it was moved to the node holding the port, and a CoreDNS with its kubernetes plugin removed runs 2/2 with populated endpoints, clean logs, and no cluster names.
 source: handson
 env: kind 0.32.0 on Podman 5.7.1 · Kubernetes 1.36.1 (1 control-plane + 2 workers) · ingress-nginx (kind provider manifest) · kubectl 1.36.4 · arm64 · macOS 14.7.5
 verified: 2026-09-04
@@ -16,9 +16,9 @@ risk: low
 
 > **Verified 2026-09-04.** Every status line and HTTP code below came off the cluster in `env`.
 
-Four objects that Kubernetes reports as healthy while doing nothing useful. The pattern in all four
-is the same: **the object was created correctly and the thing it was supposed to connect to was not
-checked.** Setup is in [[cka-exam-first-three-minutes]].
+Five faults that Kubernetes reports as healthy. In the first four **the object was created correctly
+and the thing it was supposed to connect to was not checked**; the fifth is the harder case, where the
+configuration itself is wrong and every status column still agrees. Setup is in [[cka-exam-first-three-minutes]].
 
 ## Prerequisites
 
@@ -243,6 +243,108 @@ kubectl -n kube-system scale deploy coredns --replicas=2
 **Restoring and re-testing is what makes this a diagnosis rather than a guess** — the same name that
 failed now resolves to the same ClusterIP the IP test was already using.
 
+## 5. A Corefile that is valid, loaded, and wrong
+
+Section 4 was the easy version. Every check that caught it — endpoints, pod state, the deployment's
+replica count — passes here.
+
+Start from what is running rather than from memory:
+
+```bash
+kubectl -n kube-system get cm coredns -o jsonpath='{.data.Corefile}'
+```
+
+```
+  .:53 {
+      errors
+      health { lameduck 5s }
+      ready
+      kubernetes cluster.local in-addr.arpa ip6.arpa {
+         pods insecure
+         fallthrough in-addr.arpa ip6.arpa
+         ttl 30
+      }
+      prometheus :9153
+      forward . /etc/resolv.conf { max_concurrent 1000 }
+      cache 30 { … }
+      loop
+      reload
+      loadbalance
+  }
+```
+
+**`kubernetes` is the plugin that answers for `cluster.local`.** Remove that block and the file is
+still valid CoreDNS configuration — it just no longer knows anything about the cluster. The `reload`
+plugin picks the change up on its own; no restart is needed, which is part of why this is quiet.
+
+### Everything green
+
+```
+  coredns pods : 2/2 Running, restarts=0
+  endpoints    : 10.244.0.2 10.244.0.4
+  logs         : 0 lines matching error|warn|fail
+```
+
+The logs are not merely unhelpful, they are clean:
+
+```
+  [INFO] plugin/reload: Running configuration SHA512 = 1b226df798…
+  CoreDNS-1.14.2
+```
+
+**Nothing is wrong from CoreDNS's point of view.** It was asked to serve a configuration and it is
+serving it. The only sign is that reload SHA changing — useful if you know the good value, which
+nobody does mid-exam.
+
+### The pair that finds it
+
+```
+  internal  nslookup web         -> ** server can't find web.dns.podman: NXDOMAIN
+  external  nslookup example.com -> Address: 104.20.23.154
+```
+
+**Internal fails, external works.** Section 4's pair was *name fails, IP works*, which localised the
+fault to DNS. This second pair localises it inside DNS:
+
+| internal | external | where to look |
+|---|---|---|
+| fails | fails | CoreDNS is not answering at all — pods, endpoints, section 4 |
+| fails | works | the `kubernetes` plugin — cluster names are not being served |
+| works | fails | the `forward` block — upstream resolution |
+
+The error text carries the same information if you read past `NXDOMAIN`: the query became
+`web.dns.podman`, meaning the resolver exhausted the cluster search domains and fell through to the
+host's. **A cluster name that reaches an upstream resolver has not been handled by the `kubernetes`
+plugin.**
+
+Confirm against what is actually loaded, not against the ConfigMap you just read:
+
+```bash
+kubectl -n kube-system exec deploy/coredns -- cat /etc/coredns/Corefile | grep -c kubernetes
+```
+
+```
+  0
+```
+
+### For contrast, a syntax error is loud
+
+```
+  coredns-df6c596f8-qbcrr   0/1   CrashLoopBackOff
+  coredns-df6c596f8-w97mh   0/1   CrashLoopBackOff
+  endpoints: 10.244.0.4                       <- the surviving old pod
+  log: plugin/prometheus: this plugin can only be used once per Server Block
+```
+
+**A broken Corefile names its own problem and takes the pods down with it.** That failure is easy;
+this section exists because the valid-but-wrong one is not, and the two are reached by editing the
+same file.
+
+One detail worth carrying: during the rollout the endpoint list was **not empty** — one old pod was
+still serving while the new ones crashlooped. **A partially populated endpoint list during a config
+change is its own signal**, and a single endpoint where you expect two is worth a second look rather
+than a relieved glance.
+
 ## Verification checklist
 
 - [x] Two Services, one with a mistyped selector, are **identical in `kubectl get svc`**
@@ -261,6 +363,12 @@ failed now resolves to the same ClusterIP the IP test was already using.
 - [x] `endpoints kube-dns` is **empty** and `deploy coredns` reads **`READY 0/0`** — a self-consistent ratio, not an obvious failure
 - [x] `nslookup` returns `connection timed out; no servers could be reached`
 - [x] Scaling CoreDNS back restores two endpoints and the name resolves to the ClusterIP the IP test used
+- [x] Removing the `kubernetes` block leaves CoreDNS **2/2 Running with 0 restarts and populated endpoints**
+- [x] Its logs contain **zero** error/warn/fail lines in that state — only the reload SHA and the version banner
+- [x] Internal `web` returns **NXDOMAIN for `web.dns.podman`** while external `example.com` resolves normally
+- [x] `exec deploy/coredns -- cat /etc/coredns/Corefile | grep -c kubernetes` returns **0**, confirming what is loaded rather than what was applied
+- [x] A genuine syntax error instead gives **CrashLoopBackOff** and a log line naming the plugin
+- [x] During that rollout the endpoint list held **one** address, not zero — a partial list is its own signal
 
 ## Rollback
 
@@ -296,7 +404,7 @@ not the object you just created.**
 - [ ] Repeat the storage drill against a real CSI driver, where the same task should keep the data and the node-locality trap disappears
 - [ ] Add `nodeAffinity` to the hostPath PV and confirm the scheduler refuses the second pod instead of mounting an empty directory
 - [ ] Add a NodePort and a LoadBalancer Service drill, including what `EXTERNAL-IP: <pending>` means on a cluster with no provider
-- [ ] Break CoreDNS by corrupting its Corefile rather than scaling it to zero, where the pods stay `Running` and `endpoints` is populated — the version of this fault that section 4's checks would not catch
+- [ ] Break the `forward` block instead and confirm the third row of the table — external failing while internal works — which is the one combination not yet measured
 - [ ] Test an Ingress with `ingressClassName` deliberately wrong, to see the silent-ignore case rather than reasoning about it
 
 ## Related
