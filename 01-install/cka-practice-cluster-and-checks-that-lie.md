@@ -1,20 +1,20 @@
 ---
 title: CKA practice drills — five exam tasks, and the check that passes on each wrong answer
-date: 2026-08-31
+date: 2026-09-03
 domain: install
 tags: [kubernetes, cka, certification, troubleshooting]
 stack: [kubernetes, kind, etcd, rbac, networkpolicy, podman]
 summary: Five graded-shape CKA tasks — etcd restore, RBAC, NetworkPolicy, a dead node, and a kubeadm 1.34 to 1.35 upgrade on real EC2 hosts. Each is paired with the check most candidates run, which passes whether the answer is right or wrong, and the check that actually distinguishes them.
 source: handson
 env: Sections 1–5 on kind 0.32.0 / Podman 5.7.1 · Kubernetes 1.36.1 (1 control-plane + 2 workers) · etcd 3.6.0 · kindnetd v20260528 · arm64 · macOS 14.7.5 — Section 6 on AWS EC2, 2 × t3.medium, Ubuntu 24.04.4, containerd 2.2.1, flannel, kubeadm 1.34.11 upgraded to 1.35.8, x86_64
-verified: 2026-08-31
+verified: 2026-09-03
 verifiability: partial
 verifiability-note: Sections 1–5 run on kind, which is not the exam environment — etcdctl lives only inside a distroless etcd container and the CNI is kindnet, so those commands differ in detail from a real kubeadm cluster even though the task shapes and verification logic do not. Section 6 ran on real EC2 hosts and is faithful, but it upgrades a single-control-plane cluster; a stacked-etcd HA control plane needs the extra nodes and was not exercised. Storage tasks are not covered, and nothing here was performed under exam time pressure.
 duration: 90–120 min
 risk: low
 ---
 
-> **Verified 2026-08-31.** Every state transition below was produced on the cluster in `env`, in both
+> **Verified 2026-09-03.** Every state transition below was produced on the cluster in `env`, in both
 > directions — each check was watched passing on a correct answer and on a wrong one.
 
 The CKA is graded on the end state of a cluster, not on what you typed. **That makes the verification

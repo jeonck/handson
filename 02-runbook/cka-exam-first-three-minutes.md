@@ -1,13 +1,13 @@
 ---
 title: The first three minutes of a CKA attempt — shell setup and generated YAML
-date: 2026-08-31
+date: 2026-09-04
 domain: runbook
 tags: [kubernetes, cka, certification, productivity]
 stack: [kubernetes, kubectl, bash]
 summary: The fixed opening sequence for a performance-based Kubernetes exam — aliases, completion, a pinned namespace — plus what kubectl will write for you. A generated Deployment is 22 lines; the same object read back from the cluster is 64, and six of its metadata fields cannot be re-applied.
 source: handson
 env: Kubernetes 1.36.1 on kind 0.32.0 · kubectl 1.36.4 · bash 5 · macOS 14.7.5
-verified: 2026-08-31
+verified: 2026-09-04
 verifiability: partial
 verifiability-note: Every command and count below was run against a live cluster, but nothing here was timed under exam conditions and the exam terminal is not this one — its shell, kubectl version and whether your rc file survives a session are all outside what a lab can settle. Treat the sequence as a checklist to rehearse, not as a measured time saving.
 duration: 20–30 min to rehearse

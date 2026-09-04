@@ -1,20 +1,20 @@
 ---
 title: CKA service, ingress and storage drills — three objects that exist, report healthy, and carry no traffic or data
-date: 2026-08-31
+date: 2026-09-04
 domain: install
 tags: [kubernetes, cka, certification, networking, storage]
 stack: [kubernetes, kind, ingress-nginx, kubectl, podman]
 summary: A Service with a mistyped selector is indistinguishable from a working one in kubectl get svc, a Bound PVC mounts cleanly on a second node with the data missing, and an Ingress with a Running controller answered nothing until the controller was moved to the node holding the port.
 source: handson
 env: kind 0.32.0 on Podman 5.7.1 · Kubernetes 1.36.1 (1 control-plane + 2 workers) · ingress-nginx (kind provider manifest) · kubectl 1.36.4 · arm64 · macOS 14.7.5
-verified: 2026-08-31
+verified: 2026-09-04
 verifiability: partial
 verifiability-note: The storage drill uses a hostPath PersistentVolume, which is where the node-locality finding comes from; a real CSI driver behaves differently and that comparison was not run. The ingress port path is kind-specific — hostPort on a node plus an extraPortMapping — so the routing results are faithful but the plumbing is not what an exam cluster uses. No drill was performed under time pressure.
 duration: 60–90 min
 risk: low
 ---
 
-> **Verified 2026-08-31.** Every status line and HTTP code below came off the cluster in `env`.
+> **Verified 2026-09-04.** Every status line and HTTP code below came off the cluster in `env`.
 
 Three objects that Kubernetes reports as healthy while doing nothing useful. The pattern in all three
 is the same: **the object was created correctly and the thing it was supposed to connect to was not

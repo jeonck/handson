@@ -1,20 +1,20 @@
 ---
 title: CDP for testing — measurements you can trust, and two coverage calls that always flatter you
-date: 2026-08-31
+date: 2026-09-03
 domain: install
 tags: [testing, browser, performance, security]
 stack: [chrome-devtools-protocol, chrome, python, websockets]
 summary: Driving Chrome from forty lines of WebSocket JSON with no automation library. CPU and network emulation both landed within 8% of what they were asked for, while the JS and CSS coverage calls each reported zero unused code on a page that is mostly unused — in the one direction a CI budget would never catch.
 source: handson
 env: Chrome 152.0.7977.66 (headless=new) · CDP Protocol-Version 1.3 · Python 3.13 · websockets 15.0.1 · macOS 14.7.5 on M1 Pro
-verified: 2026-08-31
+verified: 2026-09-03
 verifiability: partial
 verifiability-note: One Chrome version on one machine, against a four-file static page built for the purpose, so the coverage and emulation behaviour is Chrome 152's and not a protocol guarantee. The security section is entirely defensive and was run against this lab's own throwaway browser holding a cookie the lab set; no other browser, profile or host was touched, and the binding result is macOS-specific.
 duration: 60–90 min
 risk: low
 ---
 
-> **Verified 2026-08-31.** Every number came off a throwaway Chrome launched for this page with its
+> **Verified 2026-09-03.** Every number came off a throwaway Chrome launched for this page with its
 > own `--user-data-dir`. The two coverage results are wrong in the flattering direction and the page
 > shows what they should have said.
 

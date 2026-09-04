@@ -1,20 +1,20 @@
 ---
 title: CKA workload and scheduling drills — six tasks where the status column agrees with a wrong answer
-date: 2026-08-31
+date: 2026-09-04
 domain: install
 tags: [kubernetes, cka, certification, scheduling]
 stack: [kubernetes, kind, kubectl, podman]
 summary: Rolling updates, resource pressure, Secrets, nodeSelector, taints and static pods, each run on a three-node cluster. A Deployment whose new image cannot be pulled reports READY 3/3 and AVAILABLE 3, a Deployment with an unschedulable pod reports Available=True, and a static pod in a mistyped directory produces no pod and no log line at all.
 source: handson
 env: kind 0.32.0 on Podman 5.7.1 · Kubernetes 1.36.1 (1 control-plane + 2 workers) · kubectl 1.36.4 · arm64 · macOS 14.7.5
-verified: 2026-08-31
+verified: 2026-09-04
 verifiability: partial
 verifiability-note: kind rather than the exam's kubeadm cluster, so node names, the control-plane taint and the CNI differ, and none of these drills was performed under time pressure. The static-pod drill edits a node's filesystem through the container runtime, which is a kind-specific path; on a real node it is an ordinary file copy.
 duration: 60–90 min
 risk: low
 ---
 
-> **Verified 2026-08-31.** Every column, event and message below came off the cluster in `env`. Each
+> **Verified 2026-09-04.** Every column, event and message below came off the cluster in `env`. Each
 > drill was run in both directions — the failing state and the fixed one.
 
 Six tasks in the shape the exam uses, each with the command that solves it and the reason the obvious

@@ -1,20 +1,20 @@
 ---
 title: Local RAG — two checkbox lines, one answered as a procedure and one as a fact
-date: 2026-08-28
+date: 2026-08-30
 domain: install
 tags: [rag, llm, embeddings, retrieval, evaluation]
 stack: [ollama, bge-m3, chromadb, streamlit, python]
 summary: A RAG over this repository's own 64 documents, run entirely on a laptop. Both of its worst answers are a checkbox line lifted out of a document — an unchecked to-do returned as a four-step procedure, and a checked verification line returned as the answer to a different question, the second one surviving the "reply I don't know" instruction that fixes the first.
 source: handson
 env: Ollama 0.31.1 · bge-m3 (1024-dim) · all-minilm (384-dim) · llama3.2:3b · gemma3:4b · Chroma 1.5.9 (cosine) · Streamlit 1.62 · Python 3.13 · macOS 14.7.5 on M1 Pro / 16 GB
-verified: 2026-08-28
+verified: 2026-08-30
 verifiability: partial
 verifiability-note: Every distance, chunk count and answer below was produced on this machine against this repository as the corpus, so the findings are reproducible but corpus-specific — the numbers will differ on other documents. Generation was measured on two models over three questions, which is enough to show the failures are model-dependent and not enough to rank the models. Reranking, hybrid search and a labelled evaluation set are all absent, and 20 questions is far too few to tune a threshold on.
 duration: 90–120 min
 risk: low
 ---
 
-> **Verified 2026-08-28.** The screenshots are the running application. Both failures on this page are
+> **Verified 2026-08-30.** The screenshots are the running application. Both failures on this page are
 > a Markdown checkbox line pulled out of a document that meant something else by it.
 
 RAG is usually presented as a way to ground a model in your documents. **The interesting question is
