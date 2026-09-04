@@ -1,10 +1,10 @@
 ---
-title: CKA workload and scheduling drills — six tasks where the status column agrees with a wrong answer
+title: CKA workload and scheduling drills — seven tasks where the status column agrees with a wrong answer
 date: 2026-09-04
 domain: install
 tags: [kubernetes, cka, certification, scheduling]
 stack: [kubernetes, kind, kubectl, podman]
-summary: Rolling updates, resource pressure, Secrets, nodeSelector, taints and static pods, each run on a three-node cluster. A Deployment whose new image cannot be pulled reports READY 3/3 and AVAILABLE 3, a Deployment with an unschedulable pod reports Available=True, and a static pod in a mistyped directory produces no pod and no log line at all.
+summary: Rolling updates, resource pressure, Secrets, nodeSelector, taints, static pods and DaemonSets, each run on a three-node cluster. A Deployment whose new image cannot be pulled reports READY 3/3, a static pod in a mistyped directory produces no pod and no log line, and a DaemonSet covering two of three nodes reports every column full.
 source: handson
 env: kind 0.32.0 on Podman 5.7.1 · Kubernetes 1.36.1 (1 control-plane + 2 workers) · kubectl 1.36.4 · arm64 · macOS 14.7.5
 verified: 2026-09-04
@@ -17,8 +17,8 @@ risk: low
 > **Verified 2026-09-04.** Every column, event and message below came off the cluster in `env`. Each
 > drill was run in both directions — the failing state and the fixed one.
 
-Six tasks in the shape the exam uses, each with the command that solves it and the reason the obvious
-check does not prove it. Setup for these is in [[cka-exam-first-three-minutes]]; the harder
+Seven tasks in the shape the exam uses, each with the command that solves it and the reason the
+obvious check does not prove it. Setup for these is in [[cka-exam-first-three-minutes]]; the harder
 Cluster Architecture tasks are in [[cka-practice-cluster-and-checks-that-lie]].
 
 ## Prerequisites
@@ -220,6 +220,78 @@ kubectl delete pod right-<node>
 **It comes back.** The API server deletes the mirror pod; the kubelet recreates it from the file that
 is still on disk. To remove a static pod you remove the manifest from the node.
 
+## 7. A DaemonSet that reports full coverage of two thirds of the cluster
+
+```bash
+kubectl apply -f node-agent.yaml     # a plain DaemonSet, no tolerations
+kubectl get ds node-agent
+```
+
+```
+  NAME         DESIRED   CURRENT   READY   UP-TO-DATE   AVAILABLE
+  node-agent   2         2         2       2            2
+```
+
+**Every column is 2 and every column agrees. The cluster has three nodes.**
+
+```
+  node-agent-hpk8h  on cka3-worker
+  node-agent-qxrwl  on cka3-worker2
+  cluster nodes: 3
+```
+
+`DESIRED` is not the number of nodes — it is **the number of nodes this pod is allowed to run on**.
+The control plane carries `node-role.kubernetes.io/control-plane:NoSchedule`, the DaemonSet has no
+matching toleration, so that node is excluded from the target set and the ratio is computed against
+the smaller number. A task that says *"run an agent on every node"* is failed by this object, and
+nothing in `get ds` says so.
+
+```bash
+kubectl patch ds node-agent -p '{"spec":{"template":{"spec":{"tolerations":
+  [{"key":"node-role.kubernetes.io/control-plane","operator":"Exists","effect":"NoSchedule"}]}}}}'
+```
+
+```
+  DESIRED=3 READY=3
+  node-agent-vt8cm  on cka3-control-plane
+```
+
+**Compare `DESIRED` against `kubectl get nodes | wc -l`.** That one comparison is the check; the
+DaemonSet's own columns cannot make it for you.
+
+### What a drain does to it
+
+```bash
+kubectl drain cka3-worker --ignore-daemonsets --delete-emptydir-data
+```
+
+```
+  Warning: ignoring DaemonSet-managed Pods: drills/node-agent-hpk8h, kube-system/kindnet-…, kube-system/kube-proxy-…
+  node/cka3-worker drained
+```
+
+```
+  node             : Ready,SchedulingDisabled
+  its DaemonSet pod: node-agent-qb97r   Running
+  ds               : DESIRED=3 READY=3
+```
+
+**The node is drained and the DaemonSet pod is still running on it.** That is what the flag means —
+`--ignore-daemonsets` does not evict them, it agrees not to try. For maintenance that must stop
+everything on a node, drain is not sufficient on its own.
+
+Leaving the flag off does not protect you either:
+
+```
+  node/cka3-worker2 cordoned
+  error: unable to drain node "cka3-worker2" due to error: cannot delete DaemonSet-managed Pods
+  (use --ignore-daemonsets to ignore): …
+```
+
+**The node is cordoned before the error.** The command failed, the cluster changed anyway, and a task
+left in that state has a node that schedules nothing while looking like an unfinished command. Check
+`kubectl get nodes` after any drain that errors.
+
 ## Verification checklist
 
 - [x] A broken image rollout leaves `READY 3/3` and `AVAILABLE 3` while `UP-TO-DATE` is **1**
@@ -235,6 +307,10 @@ is still on disk. To remove a static pod you remove the manifest from the node.
 - [x] A manifest in `/etc/kubernetes/manifest` (singular) produces **no pod and zero kubelet log lines**
 - [x] A manifest in the correct directory produces a pod named `<name>-<node>`
 - [x] `kubectl delete pod` on a static pod is undone by the kubelet within seconds
+- [x] A DaemonSet with no tolerations reports **DESIRED/READY 2/2 on a three-node cluster**, with every column agreeing
+- [x] Adding the control-plane toleration moves it to **DESIRED=3 READY=3** and places a pod on the control plane
+- [x] `kubectl drain --ignore-daemonsets` leaves the DaemonSet pod **Running on the drained node**
+- [x] Omitting `--ignore-daemonsets` **cordons the node and then errors**, leaving it unschedulable after a failed command
 
 ## Rollback
 
@@ -242,6 +318,7 @@ is still on disk. To remove a static pod you remove the manifest from the node.
 kubectl delete ns drills
 kubectl taint node <node> tier-
 kubectl label node <node> disktype-
+kubectl uncordon <node>          # a failed drain leaves this behind
 # static pods live on the node, not in the API
 rm /etc/kubernetes/manifests/<file>.yaml
 ```
@@ -263,7 +340,7 @@ than memorising two separate diagnoses.
 
 ## Follow-ups
 
-- [ ] Add a DaemonSet drill, including what happens to it during a node drain, which is the one workload type not covered here
+- [ ] Check whether `DESIRED` also excludes nodes made unschedulable by cordon rather than by taint, which would give the same flattering ratio for a second reason
 - [ ] Add multi-container and init-container drills, where the failing check is `kubectl logs` needing `-c` and silently picking the wrong container
 - [ ] Repeat drill 2 with a `LimitRange` in the namespace, which changes the failure from `Pending` to a rejected create
 - [ ] Time each drill against a six-minute budget, since none of these was done against a clock

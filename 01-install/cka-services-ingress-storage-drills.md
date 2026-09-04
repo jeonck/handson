@@ -1,10 +1,10 @@
 ---
-title: CKA service, ingress and storage drills — three objects that exist, report healthy, and carry no traffic or data
+title: CKA service, ingress, storage and DNS drills — four objects that exist, report healthy, and carry nothing
 date: 2026-09-04
 domain: install
 tags: [kubernetes, cka, certification, networking, storage]
 stack: [kubernetes, kind, ingress-nginx, kubectl, podman]
-summary: A Service with a mistyped selector is indistinguishable from a working one in kubectl get svc, a Bound PVC mounts cleanly on a second node with the data missing, and an Ingress with a Running controller answered nothing until the controller was moved to the node holding the port.
+summary: A Service with a mistyped selector is indistinguishable from a working one in kubectl get svc, a Bound PVC mounts cleanly on a second node with the data missing, an Ingress with a Running controller answered nothing until it was moved to the node holding the port, and with CoreDNS scaled to zero every DNS object still reads healthy.
 source: handson
 env: kind 0.32.0 on Podman 5.7.1 · Kubernetes 1.36.1 (1 control-plane + 2 workers) · ingress-nginx (kind provider manifest) · kubectl 1.36.4 · arm64 · macOS 14.7.5
 verified: 2026-09-04
@@ -16,7 +16,7 @@ risk: low
 
 > **Verified 2026-09-04.** Every status line and HTTP code below came off the cluster in `env`.
 
-Three objects that Kubernetes reports as healthy while doing nothing useful. The pattern in all three
+Four objects that Kubernetes reports as healthy while doing nothing useful. The pattern in all four
 is the same: **the object was created correctly and the thing it was supposed to connect to was not
 checked.** Setup is in [[cka-exam-first-three-minutes]].
 
@@ -183,6 +183,66 @@ A `hostPath` PV used across nodes should carry `nodeAffinity` so the scheduler r
 succeeding quietly; without it, the failure surfaces as missing data rather than as a scheduling
 error.
 
+## 4. DNS is down and every DNS object looks fine
+
+Break it the way a task's scenario would:
+
+```bash
+kubectl -n kube-system scale deploy coredns --replicas=0
+```
+
+The symptom, from a pod:
+
+```
+  http://web              -> FAIL
+  http://10.96.136.176    -> OK
+```
+
+**Names fail and the IP works.** That single pair localises the fault before anything is inspected:
+the pod's network, the Service's ClusterIP, kube-proxy and the backend are all fine, because traffic
+to the address reaches nginx. Only the step that turns a name into that address is broken. Run this
+pair first on any "cannot reach the service" task — it splits the problem in half for the cost of one
+extra command.
+
+### The checks that look healthy
+
+```
+  get svc kube-dns   : kube-dns  ClusterIP  10.96.0.10
+  pod's nameserver   : 10.96.0.10
+```
+
+**Both are correct and both stay correct with no DNS server running at all.** The Service object owns
+a ClusterIP whether or not anything is behind it — the same property as the broken selector in
+section 1 — and the pod's `/etc/resolv.conf` is written at pod creation from the kubelet's config,
+so it keeps pointing at an address that answers nothing.
+
+### The checks that fail
+
+```
+  endpoints kube-dns : (empty)
+  deploy coredns     : READY=0/0  AVAILABLE=0
+  nslookup web       : ;; connection timed out; no servers could be reached
+```
+
+`endpoints` is the same one-command check as section 1, and it works here for the same reason.
+
+**`READY 0/0` deserves a second look.** It is not `0/2`; a deployment scaled to zero reports a ratio
+that is internally consistent and reads as fine at a glance. When a control-plane add-on is the
+suspect, compare the replica count against what it should be, not the fraction against itself.
+
+```bash
+kubectl -n kube-system scale deploy coredns --replicas=2
+```
+
+```
+  endpoints kube-dns : 10.244.1.5 10.244.2.5
+  http://web         : OK
+  nslookup web       : Address: 10.96.136.176
+```
+
+**Restoring and re-testing is what makes this a diagnosis rather than a guess** — the same name that
+failed now resolves to the same ClusterIP the IP test was already using.
+
 ## Verification checklist
 
 - [x] Two Services, one with a mistyped selector, are **identical in `kubectl get svc`**
@@ -196,12 +256,18 @@ error.
 - [x] The shipped controller `nodeSelector` is `kubernetes.io/os: linux` — the `ingress-ready` label was never read
 - [x] A `Bound` PVC mounts on a second node with `/data` present and **`marker.txt` missing**
 - [x] The file exists in `/tmp/pv-drill` on the first worker only
+- [x] With CoreDNS scaled to zero, a pod reaches the Service **by IP** and fails **by name**
+- [x] `kubectl get svc kube-dns` still shows ClusterIP `10.96.0.10`, and the pod's `resolv.conf` still points at it
+- [x] `endpoints kube-dns` is **empty** and `deploy coredns` reads **`READY 0/0`** — a self-consistent ratio, not an obvious failure
+- [x] `nslookup` returns `connection timed out; no servers could be reached`
+- [x] Scaling CoreDNS back restores two endpoints and the name resolves to the ClusterIP the IP test used
 
 ## Rollback
 
 ```bash
 kubectl delete ns drills
 kubectl delete pv pv-drill
+kubectl -n kube-system scale deploy coredns --replicas=2   # if a drill left it at 0
 kubectl delete -f https://raw.githubusercontent.com/kubernetes/ingress-nginx/main/deploy/static/provider/kind/deploy.yaml
 ```
 
@@ -230,7 +296,7 @@ not the object you just created.**
 - [ ] Repeat the storage drill against a real CSI driver, where the same task should keep the data and the node-locality trap disappears
 - [ ] Add `nodeAffinity` to the hostPath PV and confirm the scheduler refuses the second pod instead of mounting an empty directory
 - [ ] Add a NodePort and a LoadBalancer Service drill, including what `EXTERNAL-IP: <pending>` means on a cluster with no provider
-- [ ] Add a CoreDNS troubleshooting drill — scale it to zero and work back from the symptom, since every drill here assumed DNS was healthy
+- [ ] Break CoreDNS by corrupting its Corefile rather than scaling it to zero, where the pods stay `Running` and `endpoints` is populated — the version of this fault that section 4's checks would not catch
 - [ ] Test an Ingress with `ingressClassName` deliberately wrong, to see the silent-ignore case rather than reasoning about it
 
 ## Related
