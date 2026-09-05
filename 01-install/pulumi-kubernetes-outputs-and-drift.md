@@ -4,7 +4,7 @@ date: 2026-09-04
 domain: install
 tags: [iac, kubernetes, typescript, drift]
 stack: [pulumi, kubernetes, typescript, kind, podman]
-summary: Infrastructure as TypeScript against a throwaway kind cluster, with no Pulumi Cloud account, then the same resources in HCL for comparison. Interpolating a resource property into a template literal produces a string containing an error message rather than raising one, pulumi preview reports five resources unchanged while the Deployment it describes has been deleted, and terraform plan catches the same deletion in one second — while a grep for the secret returns zero on both state files, for opposite reasons.
+summary: Infrastructure as TypeScript against a throwaway kind cluster, then the same resources in HCL. A template literal over a resource property yields a string containing an error message rather than raising one, pulumi preview reports five resources unchanged while the Deployment has been deleted and terraform plan catches it in one second, a grep for the secret returns zero on both state files for opposite reasons, and twelve services with three kinds of variation cost 72 HCL lines against 40 TypeScript — the repetition HCL is supposed to be bad at.
 source: handson
 env: Pulumi v3.261.0 (local file backend) · @pulumi/pulumi 3.261.0 · @pulumi/kubernetes 4.34.0 · @pulumi/random 4 · Node v24.10.0 · Terraform 1.15.7 with hashicorp/kubernetes 2.38.0 and random 3.9.0 · Kubernetes 1.36.1 on kind 0.32.0 / Podman 5.7.1 · arm64 · macOS 14.7.5
 verified: 2026-09-04
@@ -325,6 +325,121 @@ One smaller difference in the same area:
 **Asking Terraform for a sensitive output by name prints it**; only the full listing redacts. Pulumi
 requires `--show-secrets` either way. Worth knowing before piping either into a log.
 
+## 6. Twelve of the same resource, which is the case a language is for
+
+The argument for writing infrastructure in a real language is repetition, so here is repetition: a
+JSON spec of twelve services, three tiers driving replica counts, seven of them public and five
+needing a database secret. Twenty-five resources, both tools, same cluster.
+
+```json title="spec.json"
+[{"name":"auth", "tier":"gold", "public":true, "db":true}, …]
+```
+
+```typescript title="index.ts"
+for (const s of spec) {
+    const labels = { app: s.name, tier: s.tier };
+    new k8s.apps.v1.Deployment(s.name, { /* … replicas: replicas[s.tier] … */ }, opts);
+    if (s.public) new k8s.core.v1.Service(s.name, { /* … */ }, opts);
+    if (s.db)     new k8s.core.v1.Secret(`${s.name}-db`, { /* … */ }, opts);
+}
+```
+
+```hcl title="main.tf"
+locals {
+  services = { for s in jsondecode(file(var.spec_file)) : s.name => s }
+  replicas = { gold = 3, silver = 2, bronze = 1 }
+  public   = { for k, v in local.services : k => v if v.public }
+  withdb   = { for k, v in local.services : k => v if v.db }
+}
+
+resource "kubernetes_deployment" "svc" {
+  for_each = local.services
+  # … replicas = local.replicas[each.value.tier] …
+}
+resource "kubernetes_service" "svc" { for_each = local.public }
+resource "kubernetes_secret"  "db"  { for_each = local.withdb }
+```
+
+**Both are flat, and the gap barely moved:**
+
+```
+                       1 service    12 services   delta
+  main.tf  (HCL)         67 lines     72 lines      +5
+  index.ts (TypeScript)  37 lines     40 lines      +3
+```
+
+**HCL did not blow up.** `for_each` over a map, plus a filtered map for the conditional resources,
+expresses all three variations without repetition — and the folklore this section was written to test
+turns out to be about `count`, not about HCL. `count` is positional, so inserting an item in the
+middle renumbers everything after it; `for_each` is keyed, and the keys here are service names.
+
+Adding a thirteenth service to the spec:
+
+```
+  terraform:  # kubernetes_deployment.svc["reports"] will be created
+              # kubernetes_secret.db["reports"] will be created
+              # kubernetes_service.svc["reports"] will be created
+              Plan: 3 to add, 0 to change, 0 to destroy
+
+  pulumi:     + 3 to create
+              26 unchanged
+```
+
+**Neither produces spurious churn.** Three resources added, nothing else touched, in both.
+
+### Where they actually differ: looping over something not yet known
+
+Both tools can only repeat over values they know before creating anything. Ask either to key a loop
+on an attribute the API server assigns at creation time, and the difference is not in the limitation
+but in how you find out.
+
+Terraform refuses:
+
+```
+  Error: Invalid for_each argument
+    on main.tf line 15, in resource "kubernetes_config_map" "derived":
+    15:   for_each = toset([kubernetes_namespace.src.metadata[0].uid])
+      │ kubernetes_namespace.src.metadata[0].uid is a string, known only after apply
+```
+
+**Nothing runs.** The message names the expression, the attribute and the reason.
+
+Pulumi accepts it. The equivalent is a resource constructed inside `.apply()`, which is legal
+TypeScript and does something worth seeing:
+
+```
+  pulumi preview : + kubernetes:core/v1:ConfigMap cm-a27dae54  create
+  pulumi up      : + kubernetes:core/v1:ConfigMap cm-ee87e5d1  created
+  in the cluster :   cm-ee87e5d1
+```
+
+**The preview shows one resource and the apply creates a different one.** During preview the
+namespace does not exist, so its `uid` is unknown and Pulumi substitutes a placeholder; the name
+derived from that placeholder is `cm-a27dae54`, and it is fiction. At apply the real uid produces
+`cm-ee87e5d1`. No error, no warning, and **a preview whose output does not describe what will
+happen** — the same shape as `preview` reporting `5 unchanged` in section 4, reached a different way.
+
+That is the honest form of the trade. It is not that HCL cannot loop; it is that a general-purpose
+language will let you write a loop whose inputs do not exist yet, and the failure is a plausible
+preview rather than a refusal.
+
+### The timing measurement that had to be thrown away
+
+The first run said Pulumi 12 s against Terraform 47 s, which looked like a headline. It was a cold
+Terraform run — provider download and initialisation — measured against a Pulumi run that had none of
+that to do. Warm, twice each, same 25 resources:
+
+```
+  pulumi up        13s   14s
+  terraform apply   6s    4s
+  terraform apply -parallelism=30    4s   (parallelism was not the factor)
+```
+
+**Terraform is two to three times faster here, the opposite of the first reading.** One cold run each
+would have published the reverse. On this workload the difference is plausibly Node.js and the
+language host starting up, but that is a guess and the measurement above is not: it says only that on
+25 Kubernetes resources against a local cluster, warm, these are the numbers.
+
 ## Verification checklist
 
 - [x] `pulumi login --local` reports `file://~` and the whole stack lives in **one JSON file** under `~/.pulumi/stacks/`
@@ -346,6 +461,13 @@ requires `--show-secrets` either way. Worth knowing before piping either into a 
 - [x] `grep -c -F` for the password in `terraform.tfstate` returns **0 while the value is present**, stored as `\u0026`/`\u003e` escapes
 - [x] Re-checked with escaping, Pulumi's state has **0 plaintext and 0 escaped** occurrences alongside 5 `ciphertext` fields — on a password containing `<` and `>`
 - [x] `terraform output <name>` prints a `sensitive` value; only `terraform output` with no argument redacts it
+- [x] Twelve services with three kinds of variation take **72 HCL lines against 40 TypeScript**, up +5 and +3 from the single-resource case
+- [x] Both apply the same **25 resources** — 12 Deployments, 7 Services, 5 Secrets
+- [x] Adding a thirteenth service plans as exactly **3 to add** in both, with no churn — `for_each` is keyed, unlike `count`
+- [x] `for_each` over an attribute known only after apply **fails at plan** with `Invalid for_each argument`
+- [x] The Pulumi equivalent previews `cm-a27dae54` and creates `cm-ee87e5d1` — **a preview naming a resource that never exists**
+- [x] Warm timings are `pulumi up` 13 s / 14 s against `terraform apply` 6 s / 4 s, reversing the cold-run reading of 12 s against 47 s
+- [x] `-parallelism=30` changes Terraform's 5 s to 4 s, ruling parallelism out as the cause
 
 ## Rollback
 
@@ -381,7 +503,7 @@ rather than as "Pulumi encrypts your secrets".
 ## Follow-ups
 
 - [ ] Run `pulumi preview --refresh` in a CI-shaped job and confirm it catches the deletion that plain `preview` missed, since that is the practical fix this page argues for
-- [ ] Produce the same resource twelve times with varying inputs in both tools, which is the case a real language is reached for and the one section 5 does not measure
+- [ ] Repeat section 6 at a scale where the state file itself is the cost — several hundred resources — since 25 is small enough that both tools are fast and neither state format is stressed
 - [ ] Test the secret path against the Pulumi Cloud backend, where the key is not a local passphrase and the property being claimed is different
 - [ ] Add a `ComponentResource` and check whether generated names inside it change on recreate the same way
 - [ ] Point the same program at LocalStack's AWS surface and see whether it hits the `InvalidAccessKeyId` recorded in [[localstack-local-aws-and-its-limits]], which would narrow that open question
