@@ -4,9 +4,9 @@ date: 2026-09-04
 domain: install
 tags: [iac, kubernetes, typescript, drift]
 stack: [pulumi, kubernetes, typescript, kind, podman]
-summary: Infrastructure as TypeScript against a throwaway kind cluster, with no Pulumi Cloud account. Interpolating a resource property into a template literal produces a string containing an error message rather than raising one, secrets are absent in plaintext from the state file, and pulumi preview reports five resources unchanged while the Deployment it describes has been deleted from the cluster.
+summary: Infrastructure as TypeScript against a throwaway kind cluster, with no Pulumi Cloud account, then the same resources in HCL for comparison. Interpolating a resource property into a template literal produces a string containing an error message rather than raising one, pulumi preview reports five resources unchanged while the Deployment it describes has been deleted, and terraform plan catches the same deletion in one second — while a grep for the secret returns zero on both state files, for opposite reasons.
 source: handson
-env: Pulumi v3.261.0 (local file backend) · @pulumi/pulumi 3.261.0 · @pulumi/kubernetes 4.34.0 · @pulumi/random 4 · Node v24.10.0 · Kubernetes 1.36.1 on kind 0.32.0 / Podman 5.7.1 · arm64 · macOS 14.7.5
+env: Pulumi v3.261.0 (local file backend) · @pulumi/pulumi 3.261.0 · @pulumi/kubernetes 4.34.0 · @pulumi/random 4 · Node v24.10.0 · Terraform 1.15.7 with hashicorp/kubernetes 2.38.0 and random 3.9.0 · Kubernetes 1.36.1 on kind 0.32.0 / Podman 5.7.1 · arm64 · macOS 14.7.5
 verified: 2026-09-04
 verifiability: partial
 verifiability-note: One provider (Kubernetes) against a single-node kind cluster, on the local file backend with a passphrase-derived key. Pulumi Cloud's own backend, its RBAC and its hosted secret handling are a different system and untested here; so are multi-stack workflows, ComponentResources, policy packs and the CI patterns this page's drift finding has consequences for.
@@ -219,6 +219,112 @@ pulumi up --yes
 **Drift detection is `pulumi refresh` followed by `pulumi preview`, or `pulumi preview --refresh`.**
 `preview` alone is a diff against a file.
 
+## 5. The same three resources in Terraform
+
+Every claim above is only half a claim without the alternative. The same Namespace, Deployment,
+Service and random password, written in HCL against the same kind cluster:
+
+```hcl title="main.tf"
+resource "kubernetes_service" "web" {
+  metadata {
+    name      = "web"
+    namespace = kubernetes_namespace.app.metadata[0].name
+  }
+  spec {
+    selector = local.labels
+    port { port = 80, target_port = 80 }
+  }
+}
+
+# The same expression that needed pulumi.interpolate. HCL has no async wrapper.
+output "url" {
+  value = "http://${kubernetes_service.web.metadata[0].name}.${kubernetes_namespace.app.metadata[0].name}.svc.cluster.local"
+}
+```
+
+```
+  url = "http://web.tf-app.svc.cluster.local"
+  Apply complete! Resources: 4 added
+```
+
+**The line that cost a whole section in Pulumi is unremarkable here.** HCL evaluates lazily by
+construction, so a reference to a not-yet-created attribute is the normal case rather than a wrapped
+type — there is no `Output<T>` because there is no general-purpose language to leak it into.
+
+### Measured side by side
+
+```
+                              Pulumi (TypeScript)         Terraform (HCL)
+  source for same resources   index.ts, 37 lines          main.tf, 67 lines
+  apply                       5 resources, 35s            4 resources, 38s
+  property interpolation      error-message string        works directly
+                              unless pulumi.interpolate
+  resource names in cluster   web-883761f1                web
+                              new suffix on recreate      exactly what you wrote
+  named sensitive output      [secret] without            prints the value
+                              --show-secrets
+  drift: preview / plan       "5 unchanged"               "Plan: 1 to add"
+  drift: auto-repair          none                        none
+```
+
+**The line counts are not the interesting row and are easy to over-read** — the TypeScript is denser
+partly because object literals are terser than HCL blocks, and it carries two URL forms rather than
+one. Nothing here measures what happens when the same resource has to be produced twelve times with
+varying inputs, which is the case people actually reach for a language to solve.
+
+**The drift row is the interesting one.** `terraform plan` refreshes from the provider before it
+diffs, so it reported `1 to add` for the Deployment deleted behind its back, in one second.
+`pulumi preview` diffs against the state file and reported `5 unchanged` for the identical situation.
+Neither tool repairs drift on its own — that is [[crossplane-cloud-resources-as-crds]]'s job — but
+only one of them notices by default.
+
+### The check that gives the same answer for opposite realities
+
+The secret comparison nearly went into this page backwards. Terraform's state:
+
+```bash
+grep -c -F -- "$PASSWORD" terraform.tfstate
+```
+
+```
+  0
+```
+
+**Zero, and the password is right there in the file:**
+
+```json
+"result": "o\u0026\u0026Sv=6*{303\u003ettT6RPH",
+```
+
+Go's JSON encoder escapes `&`, `<` and `>` as `\u0026`, `\u003c` and `\u003e`. The value
+`o&&Sv=6*{303>ttT6RPH` is stored complete and readable, and a literal `grep` for it matches nothing.
+**A state file audited with `grep` can report clean while holding every secret it has.**
+
+So the Pulumi measurement in section 3 was re-run with escaping accounted for, on a password that
+happens to contain both `<` and `>`:
+
+```
+  password             : 94Ax}RY0?hQPCDAQ>[<_
+  plaintext            : 0 occurrences
+  HTML-escaped form    : 0 occurrences
+  ciphertext fields    : 5
+```
+
+**Both zeroes, plus five ciphertext fields — the Pulumi claim survives the stronger test.** The two
+tools give the same `grep` result for opposite realities, which is the whole reason the second check
+exists.
+
+One smaller difference in the same area:
+
+```
+  terraform output db_password   -> "o&&Sv=6*{303>ttT6RPH"
+  terraform output               -> db_password = <sensitive>
+  pulumi stack output dbPassword -> [secret]
+```
+
+**Asking Terraform for a sensitive output by name prints it**; only the full listing redacts. Pulumi
+requires `--show-secrets` either way. Worth knowing before piping either into a log.
+
 ## Verification checklist
 
 - [x] `pulumi login --local` reports `file://~` and the whole stack lives in **one JSON file** under `~/.pulumi/stacks/`
@@ -233,6 +339,13 @@ pulumi up --yes
 - [x] In that state `pulumi preview` reports **`5 unchanged`** and `pulumi stack` still lists the Deployment
 - [x] `pulumi refresh` reports **`- 1 deleted`**, and `pulumi up` recreates it in 0.75 s
 - [x] `pulumi destroy` removes all 5 resources in 7 s and the namespace is `NotFound` afterwards
+- [x] The same resources in HCL are **67 lines against 37**, and apply as **4 resources in 38 s** against 5 in 35 s
+- [x] The interpolation that needed `pulumi.interpolate` yields `http://web.tf-app.svc.cluster.local` in plain HCL
+- [x] Terraform names the objects `web` and `tf-app` — **no generated suffix**
+- [x] With the Deployment deleted, `terraform plan` reports **`Plan: 1 to add`** in one second, where `pulumi preview` reported `5 unchanged`
+- [x] `grep -c -F` for the password in `terraform.tfstate` returns **0 while the value is present**, stored as `\u0026`/`\u003e` escapes
+- [x] Re-checked with escaping, Pulumi's state has **0 plaintext and 0 escaped** occurrences alongside 5 `ciphertext` fields — on a password containing `<` and `>`
+- [x] `terraform output <name>` prints a `sensitive` value; only `terraform output` with no argument redacts it
 
 ## Rollback
 
@@ -268,7 +381,7 @@ rather than as "Pulumi encrypts your secrets".
 ## Follow-ups
 
 - [ ] Run `pulumi preview --refresh` in a CI-shaped job and confirm it catches the deletion that plain `preview` missed, since that is the practical fix this page argues for
-- [ ] Compare the same three resources written in Terraform, to put the `Output<T>` cost against HCL's inability to loop naturally rather than asserting the trade
+- [ ] Produce the same resource twelve times with varying inputs in both tools, which is the case a real language is reached for and the one section 5 does not measure
 - [ ] Test the secret path against the Pulumi Cloud backend, where the key is not a local passphrase and the property being claimed is different
 - [ ] Add a `ComponentResource` and check whether generated names inside it change on recreate the same way
 - [ ] Point the same program at LocalStack's AWS surface and see whether it hits the `InvalidAccessKeyId` recorded in [[localstack-local-aws-and-its-limits]], which would narrow that open question
