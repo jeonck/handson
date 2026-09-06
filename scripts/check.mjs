@@ -18,6 +18,11 @@ const exec = promisify(execFile);
 
 const DRIFT_DAYS = 2;
 
+// build.mjs excludes these from its follow-up total for a reason: a weekly review restates
+// other documents' open items, so counting them again double-counts the same work. The gate
+// has to agree with the dashboard or the two numbers argue with each other.
+const RESTATES_FOLLOWUPS = new Set(["weekly-review"]);
+
 // Every commit date that touched each path. `verified` has to line up with one of them:
 // a date that matches no commit is a date nobody worked on.
 export async function gitTouchDates(root) {
@@ -78,7 +83,8 @@ export function check(notes, { today, touchDates, baseline }) {
       if (!hasHeading(n.body, "bit us|where this")) counts.noBitUs++;
     }
 
-    counts.openFollowups += n.tasks.filter((t) => t.kind === "followup" && !t.done).length;
+    if (!RESTATES_FOLLOWUPS.has(n.source))
+      counts.openFollowups += n.tasks.filter((t) => t.kind === "followup" && !t.done).length;
   }
 
   const ratchet = [];

@@ -1,7 +1,7 @@
 {
-  "_comment": "Ratchet limits, measured 2026-09-04. These may only go down. Raising one needs a reason in the commit message.",
+  "_comment": "Ratchet limits, measured 2026-09-06. These may only go down. Raising one needs a reason in the commit message.",
   "noCheck": 15,
   "noRollback": 1,
   "noBitUs": 7,
-  "openFollowups": 315
+  "openFollowups": 299
 }
