@@ -36,6 +36,9 @@ jobs:
       # The agent commits after that, so leaving it would deploy a site one commit behind.
       - uses: actions/checkout@v4
         with:
+          # Full history: the build's quality gate compares each doc's `verified` date
+          # against the commits that touched it, which a shallow clone hides.
+          fetch-depth: 0
           ref: ${{ inputs.ref || github.ref }}
 
       - uses: actions/setup-node@v4

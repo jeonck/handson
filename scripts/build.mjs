@@ -20,6 +20,8 @@ import hcl from "./hcl-language.mjs";
 // ```hcl / ```tf / ```terraform blocks colour like every other language on the site.
 hljs.registerLanguage("hcl", hcl);
 
+import { check, gitTouchDates } from "./check.mjs";
+
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 const DIST = path.join(ROOT, "dist");
 const config = JSON.parse(await readFile(path.join(ROOT, "site.config.json"), "utf8"));
@@ -215,6 +217,8 @@ for (const dir of VAULT_DIRS) {
       verifiability: VERIFIABILITY.includes((data.verifiability || "").toLowerCase())
         ? data.verifiability.toLowerCase()
         : "lab",
+      // The gate needs what the author wrote; the line below coerces it.
+      rawVerifiability: data.verifiability || "",
       verifiabilityNote: data["verifiability-note"] || "",
       duration: data.duration || "",
       risk: (data.risk || "").toLowerCase(),
@@ -533,3 +537,28 @@ console.log(
   `built ${notes.length} docs · ${stats.commands} commands · ${edges.length} links · ${stats.stale} stale · ${stats.gaps} with verification gaps · ${index.stacks.length} stacks`
 );
 if (missing.size) console.log(`  unresolved wikilinks: ${[...missing].join(", ")}`);
+
+/* ---------- quality gate ---------- */
+//
+// Runs here rather than as a separate command on purpose: a check you have to remember to run
+// is the same thing as a rule written in prose, which is what this replaces. CLAUDE.md stated
+// these rules for weeks while a wrong `verified` date shipped across six documents.
+const baseline = JSON.parse(
+  await readFile(path.join(ROOT, "scripts", "quality-baseline.json"), "utf8")
+);
+const touchDates = await gitTouchDates(ROOT);
+const gateToday = new Date().toISOString().slice(0, 10);
+const gate = check(notes, { today: gateToday, touchDates, baseline });
+
+if (!touchDates)
+  console.log("  gate: no git history — the verified-date check was skipped");
+else if (gate.counts.driftSkipped)
+  console.log(`  gate: ${gate.counts.driftSkipped} doc(s) not yet committed — date check skipped for those`);
+console.log("  gate: " + gate.ratchet.map((r) => `${r.key} ${r.now}/${r.limit}`).join(" · "));
+
+if (gate.errors.length) {
+  console.error(`\n  ${gate.errors.length} quality gate failure(s):`);
+  for (const e of gate.errors) console.error(`    ${e}`);
+  console.error("\n  Rules: scripts/check.mjs · ratchet limits: scripts/quality-baseline.json");
+  process.exitCode = 1;
+}
