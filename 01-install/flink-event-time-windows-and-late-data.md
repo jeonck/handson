@@ -1,15 +1,15 @@
 ---
-title: Flink event-time windows — two records vanish, the job stays RUNNING, and one metric says so
+title: Flink event-time windows — records that vanish, a job that emits nothing, and the same data giving two answers
 date: 2026-09-08
 domain: install
-tags: [streaming, event-time, watermark, sql]
-stack: [apache-flink, flink-sql, podman, docker-compose]
-summary: A two-container Flink cluster and a twelve-event stream whose correct answer is countable by hand. With a two-second watermark the job emits eight of the twelve records, drops two, and reports RUNNING with no error anywhere — the only signal is numLateRecordsDropped. Widening the watermark recovers them and delays every window, and raising parallelism to two moves the watermark four seconds further behind on identical input.
+tags: [streaming, event-time, watermark, kafka]
+stack: [apache-flink, flink-sql, kafka, podman, docker-compose]
+summary: A Flink cluster and a twelve-event stream whose correct answer is countable by hand, first on a file source and then on Kafka. A two-second watermark drops two records while the job reports RUNNING; an empty Kafka partition pins the watermark at Long.MIN_VALUE so nothing is dropped and nothing is emitted at all; and replaying the same topic from the beginning produces a different answer from consuming it live.
 source: handson
-env: Apache Flink 2.0.2 (apache/flink:2.0, arm64) · Flink SQL Client · filesystem connector · Podman 5.7.1 with docker-compose · macOS 26.6.2 arm64
+env: Apache Flink 2.0.2 (apache/flink:2.0, arm64) · Flink SQL Client · filesystem connector · flink-sql-connector-kafka 4.0.1-2.0 · Apache Kafka 4.0.0 (KRaft, single broker) · Podman 5.7.1 with docker-compose · macOS 26.6.2 arm64
 verified: 2026-09-08
 verifiability: partial
-verifiability-note: A filesystem source paced by one file per second stands in for a real broker, so the arrival ordering is controlled rather than realistic and nothing here exercises Kafka offsets, partitions or replay. Checkpoint recovery, exactly-once sink semantics and a genuinely idle source partition are all untested; the parallelism result is two subtasks on one TaskManager, not a distributed cluster.
+verifiability-note: Sections 1–6 use a filesystem source paced by a shell loop, so arrival order there is controlled rather than realistic; section 7 repeats the findings on a single-broker Kafka with two partitions, which exercises offsets and idle partitions but not replication, rebalance or a multi-broker failure. Checkpoint recovery and exactly-once sink semantics remain untested, and every parallelism result is two subtasks on one TaskManager rather than a distributed cluster.
 duration: 60–90 min
 risk: low
 ---
@@ -257,6 +257,149 @@ Worth noticing while reading these metrics:
 `Long.MIN_VALUE`, on a job that is working. **The source emits no watermark; the `WatermarkAssigner`
 does**, and reading the wrong operator's metric makes a healthy pipeline look stalled.
 
+## 7. The same pipeline on Kafka, where the source decides the answer
+
+The filesystem source could not distinguish a backlog from a live stream, because the pacing was a
+shell loop rather than a property of the source. Kafka can, and the difference turns out to change the
+result.
+
+Add a broker and the connector — the Flink image does not carry it, and mounting the single JAR is
+enough:
+
+```yaml title="compose.yml (added)"
+  kafka:
+    image: docker.io/apache/kafka:4.0.0
+    environment:
+      KAFKA_NODE_ID: 1
+      KAFKA_PROCESS_ROLES: broker,controller
+      KAFKA_LISTENERS: PLAINTEXT://:9092,CONTROLLER://:9093
+      KAFKA_ADVERTISED_LISTENERS: PLAINTEXT://kafka:9092
+      KAFKA_CONTROLLER_QUORUM_VOTERS: 1@kafka:9093
+      KAFKA_CONTROLLER_LISTENER_NAMES: CONTROLLER
+      KAFKA_LISTENER_SECURITY_PROTOCOL_MAP: CONTROLLER:PLAINTEXT,PLAINTEXT:PLAINTEXT
+      KAFKA_OFFSETS_TOPIC_REPLICATION_FACTOR: 1
+```
+
+```yaml title="compose.yml (both Flink services)"
+    volumes:
+      - "./data:/data"
+      - "./lib/flink-sql-connector-kafka-4.0.1-2.0.jar:/opt/flink/lib/flink-sql-connector-kafka-4.0.1-2.0.jar"
+```
+
+**Mount the file, not the directory.** A volume over `/opt/flink/lib` hides the image's own JARs, and
+`/opt/flink/lib/ext` is not scanned — Flink reads that one directory and no deeper. The version is
+`4.0.1-2.0`: connectors are released separately from Flink and the suffix is the Flink minor they
+target, so it is worth reading the Maven metadata rather than guessing.
+
+```sql title="the source, replacing the filesystem table"
+CREATE TABLE clicks (
+  ts TIMESTAMP(3),
+  k  STRING,
+  WATERMARK FOR ts AS ts - INTERVAL '2' SECOND
+) WITH (
+  'connector' = 'kafka',
+  'topic' = 'clicks',
+  'properties.bootstrap.servers' = 'kafka:9092',
+  'properties.group.id' = 'g1',
+  'scan.startup.mode' = 'latest-offset',
+  'format' = 'csv'
+);
+```
+
+### An empty partition stops the job without stopping it
+
+The topic has two partitions, and every record carries the same key, so all twelve land in one:
+
+```bash
+kafka-get-offsets.sh --bootstrap-server kafka:9092 --topic clicks
+```
+
+```
+  clicks:0:0
+  clicks:1:12
+```
+
+At `parallelism.default = 2` each source subtask owns one partition. The one reading partition 1 is
+perfectly healthy:
+
+```
+  0.Source__clicks[1].numRecordsIn         = 12
+  0.Source__clicks[1].currentOutputWatermark = 1788825623000   (00:00:23)
+```
+
+The window operator is not:
+
+```
+  0.GlobalWindowAggregate[5].numRecordsIn        = 12
+  0.GlobalWindowAggregate[5].numRecordsOut       = 0
+  0.GlobalWindowAggregate[5].numLateRecordsDropped = 0
+  0.GlobalWindowAggregate[5].currentInputWatermark = -9223372036854775808
+```
+
+```
+  sink rows: 0        job state: RUNNING
+```
+
+**Every record arrived, none was dropped, none came out, and nothing is wrong.** The subtask reading
+the empty partition never emits a watermark, a downstream watermark is the minimum over its inputs,
+and the minimum of `00:00:23` and `Long.MIN_VALUE` is `Long.MIN_VALUE` — forever.
+
+This is worse than section 4. There the loss was two records and a metric named it; here **the loss is
+the entire output**, and `numLateRecordsDropped = 0` actively reassures you. The only honest signal is
+a watermark that is not a timestamp.
+
+```sql
+SET 'table.exec.source.idle-timeout' = '5s';
+```
+
+```
+  "2026-09-08 00:00:00",a,4
+  "2026-09-08 00:00:00",b,2
+  "2026-09-08 00:00:10",a,2
+  "2026-09-08 00:00:10",b,2
+```
+
+A subtask that has produced nothing for five seconds is marked idle and dropped out of the minimum.
+**A partition that is merely quiet is indistinguishable from one that is slow**, which is why this is
+a timeout you choose rather than a default you get.
+
+### Replaying the topic gives a different answer from consuming it live
+
+Look again at what the fix produced: `a=4, b=2` — the hand-counted answer, with **zero** late drops.
+Section 4 lost two records from exactly this data.
+
+The difference is not the watermark, the SQL, or the broker. It is that the twelve records were
+already sitting in the topic and `scan.startup.mode = 'earliest-offset'` read the whole backlog faster
+than a watermark could be emitted between them.
+
+Starting at `latest-offset` and producing one record per second into the running job:
+
+```
+  "2026-09-08 00:00:00",a,3
+  "2026-09-08 00:00:00",b,1
+  "2026-09-08 00:00:10",a,2
+  "2026-09-08 00:00:10",b,2
+```
+
+```
+  0.GlobalWindowAggregate[5].numLateRecordsDropped = 2
+  1.GlobalWindowAggregate[5].numLateRecordsDropped = 0
+```
+
+```
+  backlog replay (earliest-offset)  ->  a=4, b=2   0 dropped
+  live stream    (latest-offset)    ->  a=3, b=1   2 dropped
+```
+
+**Same records, same SQL, same watermark bound, two different answers**, decided only by whether the
+data was already in the topic when the job started.
+
+The operational consequence is the one worth carrying: **reprocessing a topic from the beginning does
+not reproduce what the live job computed.** A backfill run is faster than real time, so records that
+were late in production are not late in the replay, and the "corrected" numbers a replay produces are
+a different measurement rather than a better one. Comparing the two is a way to size how much
+lateness a pipeline is actually absorbing.
+
 ## Verification checklist
 
 - [x] `apache/flink:2.0` publishes an **arm64** manifest, and `/overview` reports `flink-version 2.0.2`
@@ -271,6 +414,12 @@ does**, and reading the wrong operator's metric makes a healthy pipeline look st
 - [x] In that run the watermark is **00:00:15** and window `[10,20)` has *not* emitted — the latency cost
 - [x] At parallelism 2 the same input drops the same 2 records but the watermark reaches only **00:00:19**, emitting one window fewer
 - [x] `Source__clicks[1].currentOutputWatermark` is **`Long.MIN_VALUE`** on a working job
+- [x] `apache/kafka:4.0.0` publishes an **arm64** manifest, and the connector for Flink 2.0 is **`4.0.1-2.0`**
+- [x] Mounting the connector at `/opt/flink/lib/ext` does nothing; the single-file mount into `/opt/flink/lib` works
+- [x] With one key, `kafka-get-offsets.sh` shows **`clicks:0:0` and `clicks:1:12`** — one partition empty by construction
+- [x] In that state the window operator has `numRecordsIn 12`, `numRecordsOut 0`, `numLateRecordsDropped 0` and watermark **`Long.MIN_VALUE`**, with the job `RUNNING` and the sink empty
+- [x] `table.exec.source.idle-timeout = 5s` releases it and the sink emits four rows
+- [x] Backlog replay from `earliest-offset` yields **`a=4, b=2` with 0 drops**; live consumption from `latest-offset` at one record per second yields **`a=3, b=1` with 2 drops** — same records, same SQL, same bound
 
 ## Rollback
 
@@ -303,8 +452,8 @@ described as though it had been seen.
 
 ## Follow-ups
 
-- [ ] Reproduce a truly idle source partition, with a broker topic whose partition receives no records, and confirm whether the watermark pins at `Long.MIN_VALUE` and `table.exec.source.idle-timeout` releases it
-- [ ] Replace the filesystem source with Kafka and repeat sections 4–6, since arrival order there is a property of partitions and offsets rather than of a shell loop
+- [ ] Measure the backlog-versus-live gap as a number on a real topic — the ratio of records late under live consumption to records late under replay is a direct reading of how much lateness a pipeline absorbs
+
 - [ ] Recover the two dropped records instead of only counting them — the DataStream API has a late side output, and Flink SQL does not, so measure what `table.exec.emit.allow-lateness` actually does to the result
 - [ ] Kill the TaskManager mid-stream and confirm from the checkpoint what the counts are after recovery, which is the claim about exactly-once this page does not test
 - [ ] Chart `numLateRecordsDropped` against the watermark bound over several values, to turn the latency/completeness trade in section 5 into a curve rather than two points
