@@ -554,7 +554,11 @@ if (!touchDates)
   console.log("  gate: no git history — the verified-date check was skipped");
 else if (gate.counts.driftSkipped)
   console.log(`  gate: ${gate.counts.driftSkipped} doc(s) not yet committed — date check skipped for those`);
-console.log("  gate: " + gate.ratchet.map((r) => `${r.key} ${r.now}/${r.limit}`).join(" · "));
+console.log(
+  "  gate: " +
+    gate.ratchet.map((r) => `${r.key} ${r.now}/${r.limit}`).join(" · ") +
+    ` · (${gate.counts.openFollowups} open follow-ups over ${gate.counts.followupDocs} docs)`
+);
 
 if (gate.errors.length) {
   console.error(`\n  ${gate.errors.length} quality gate failure(s):`);

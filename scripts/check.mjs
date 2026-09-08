@@ -52,7 +52,7 @@ const hasHeading = (body, re) => new RegExp(`^#{2,}\\s.*${re}`, "im").test(body)
 
 export function check(notes, { today, touchDates, baseline }) {
   const errors = [];
-  const counts = { noCheck: 0, noRollback: 0, noBitUs: 0, openFollowups: 0, driftSkipped: 0 };
+  const counts = { noCheck: 0, noRollback: 0, noBitUs: 0, openFollowups: 0, followupDocs: 0, driftSkipped: 0 };
 
   for (const n of notes) {
     const at = `${n.path}`;
@@ -83,16 +83,24 @@ export function check(notes, { today, touchDates, baseline }) {
       if (!hasHeading(n.body, "bit us|where this")) counts.noBitUs++;
     }
 
-    if (!RESTATES_FOLLOWUPS.has(n.source))
+    if (!RESTATES_FOLLOWUPS.has(n.source)) {
       counts.openFollowups += n.tasks.filter((t) => t.kind === "followup" && !t.done).length;
+      counts.followupDocs++;
+    }
   }
+
+  // An absolute cap on open follow-ups cannot hold for a corpus that keeps growing — it reads as
+  // "stop writing documents". The mean per document is flat under growth and still tightens when
+  // pages get sloppier, which is the thing worth ratcheting. The raw total is printed alongside.
+  counts.followupsPerDoc =
+    counts.followupDocs ? Math.round((counts.openFollowups / counts.followupDocs) * 100) / 100 : 0;
 
   const ratchet = [];
   for (const [key, label] of [
     ["noCheck", "install/runbook docs with no verification checklist"],
     ["noRollback", "install/runbook docs with no rollback section"],
     ["noBitUs", "install/runbook docs with no 'where this bit us' section"],
-    ["openFollowups", "open follow-ups"],
+    ["followupsPerDoc", "open follow-ups per document"],
   ]) {
     const limit = baseline[key];
     if (limit === undefined) continue;
