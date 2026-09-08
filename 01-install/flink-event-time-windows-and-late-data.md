@@ -4,12 +4,12 @@ date: 2026-09-08
 domain: install
 tags: [streaming, event-time, watermark, kafka]
 stack: [apache-flink, flink-sql, kafka, podman, docker-compose]
-summary: A Flink cluster and a twelve-event stream whose correct answer is countable by hand, first on a file source and then on Kafka. A two-second watermark drops two records while the job reports RUNNING; an empty Kafka partition pins the watermark at Long.MIN_VALUE so nothing is dropped and nothing is emitted at all; and replaying the same topic from the beginning produces a different answer from consuming it live.
+summary: A Flink cluster and streams whose correct answers are countable by hand, first on a file source and then on Kafka. A two-second watermark drops two records while the job reports RUNNING; an empty Kafka partition pins the watermark at Long.MIN_VALUE so nothing is dropped and nothing is emitted; replaying a topic from the beginning gives a different answer from consuming it live; and a TaskManager killed mid-stream recovers to exactly ten records per window, while the control meant to prove that turns out to measure the sink's commit protocol instead.
 source: handson
 env: Apache Flink 2.0.2 (apache/flink:2.0, arm64) · Flink SQL Client · filesystem connector · flink-sql-connector-kafka 4.0.1-2.0 · Apache Kafka 4.0.0 (KRaft, single broker) · Podman 5.7.1 with docker-compose · macOS 26.6.2 arm64
 verified: 2026-09-08
 verifiability: partial
-verifiability-note: Sections 1–6 use a filesystem source paced by a shell loop, so arrival order there is controlled rather than realistic; section 7 repeats the findings on a single-broker Kafka with two partitions, which exercises offsets and idle partitions but not replication, rebalance or a multi-broker failure. Checkpoint recovery and exactly-once sink semantics remain untested, and every parallelism result is two subtasks on one TaskManager rather than a distributed cluster.
+verifiability-note: Sections 1–6 use a filesystem source paced by a shell loop, so arrival order there is controlled rather than realistic; section 7 repeats the findings on a single-broker Kafka with two partitions, which exercises offsets and idle partitions but not replication, rebalance or a multi-broker failure. Section 8 recovers a killed TaskManager from a checkpoint and gets exact counts, but its control was confounded by the sink's commit protocol and so isolates neither state recovery nor duplicate suppression on its own. Every parallelism result is two subtasks on one TaskManager rather than a distributed cluster.
 duration: 60–90 min
 risk: low
 ---
@@ -400,6 +400,102 @@ were late in production are not late in the replay, and the "corrected" numbers 
 a different measurement rather than a better one. Comparing the two is a way to size how much
 lateness a pipeline is actually absorbing.
 
+## 8. Killing the TaskManager mid-stream
+
+The exactly-once claim is the reason people accept the operational weight of Flink, and it has a
+property that can be checked exactly. Sixty events, one per second of event time from `00:00:00` to
+`00:00:59`, produced into Kafka four per second:
+
+```
+  six 10-second windows, ten records each — the hand-counted answer
+```
+
+**Any duplicate pushes a window above ten and any loss below it**, so the check needs no
+interpretation.
+
+```yaml title="compose.yml (added to both Flink services)"
+        state.backend.type: hashmap
+        state.checkpoints.dir: file:///data/ckpt
+        execution.checkpointing.interval: 2s
+        restart-strategy.type: fixed-delay
+        restart-strategy.fixed-delay.attempts: 100
+        restart-strategy.fixed-delay.delay: 5 s
+```
+
+**Without an explicit restart strategy the job does not come back**, and the checkpoint it would have
+recovered from is irrelevant. Both settings are needed for this to be a recovery test rather than a
+crash test.
+
+```bash
+# producer runs; eight seconds in, the TaskManager is killed and restarted five seconds later
+podman kill  flink-taskmanager-1
+podman start flink-taskmanager-1
+```
+
+```
+  [16:56:21] producer started (60 records, 0.25s apart)
+  [16:56:29] killing taskmanager mid-stream
+  [16:56:35] taskmanager restarted
+  [16:56:38] producer finished
+```
+
+Kafka kept accepting throughout — `kafka-get-offsets.sh` reports `ck:0:60` — so roughly twenty records
+were written while Flink had nowhere to run.
+
+### The result
+
+```
+  "2026-09-08 00:00:00",a,10
+  "2026-09-08 00:00:10",a,10
+  "2026-09-08 00:00:20",a,10
+  "2026-09-08 00:00:30",a,10
+  "2026-09-08 00:00:40",a,10
+```
+
+```
+  checkpoints: 40 completed · 8 failed · restored = True
+  restored from: file:/data/ckpt/fc4143b9ebd0.../chk-23
+```
+
+**Five windows, ten each, exact.** The eight failed checkpoints are the outage; the restore is the
+recovery. And the ledger closes on sixty again: fifty emitted, ten held in `[00:00:50, 00:01:00)`,
+which needs a watermark of `00:01:00` and has `00:00:57`.
+
+**The recovery demonstrably did work rather than being unnecessary.** With no checkpoint to restore,
+this source restarts at `latest-offset` — the twenty-odd records produced during the five-second
+outage would have been skipped and the windows spanning them would have come in under ten. They did
+not.
+
+### The control did not isolate what it was meant to
+
+The same run with `execution.checkpointing.interval` set to `1 h`, so that no checkpoint completes:
+
+```
+  checkpoints: 0 completed · 0 failed · restored = False
+  sink output: no committed files
+```
+
+That looks like a clean contrast and it is the wrong explanation. The output directory is not empty:
+
+```
+  .part-bf54a269-…-0-0.inprogress.b65edf68-…
+  .part-bf54a269-…-0-0.inprogress.da99a795-…
+```
+
+**Two in-progress files and nothing committed.** The filesystem sink stages rows and publishes them on
+checkpoint, so with checkpointing off it never publishes anything — crash or no crash. The zero output
+is the sink's commit protocol, not lost state, and this control therefore says nothing about state
+recovery.
+
+It says something else worth knowing: **turning checkpointing off does not merely remove recovery, it
+stops the sink producing output at all.** A pipeline that appears to be running and writing while its
+output directory holds only dotfiles is this configuration, and `ls` without `-a` shows an empty
+directory.
+
+Isolating state recovery needs a sink that commits without checkpoints — `print`, or a Kafka sink at
+at-least-once — and that run is in the follow-ups rather than described here as though it had been
+done.
+
 ## Verification checklist
 
 - [x] `apache/flink:2.0` publishes an **arm64** manifest, and `/overview` reports `flink-version 2.0.2`
@@ -420,6 +516,11 @@ lateness a pipeline is actually absorbing.
 - [x] In that state the window operator has `numRecordsIn 12`, `numRecordsOut 0`, `numLateRecordsDropped 0` and watermark **`Long.MIN_VALUE`**, with the job `RUNNING` and the sink empty
 - [x] `table.exec.source.idle-timeout = 5s` releases it and the sink emits four rows
 - [x] Backlog replay from `earliest-offset` yields **`a=4, b=2` with 0 drops**; live consumption from `latest-offset` at one record per second yields **`a=3, b=1` with 2 drops** — same records, same SQL, same bound
+- [x] Sixty events over six windows give a hand-counted answer of **ten per window**, so a duplicate or a loss is visible without interpretation
+- [x] Killing the TaskManager mid-stream and restarting it leaves five closed windows at **exactly ten each**
+- [x] The job reports **`restored = True`** from `chk-23`, with 40 checkpoints completed and 8 failed across the outage
+- [x] The ledger closes at 60: fifty emitted plus ten held in the unclosed `[00:00:50, 00:01:00)`
+- [x] With `execution.checkpointing.interval` at `1 h` the sink commits **nothing** and leaves two `.inprogress` dotfiles — the filesystem sink publishes on checkpoint, so this control does **not** isolate state recovery
 
 ## Rollback
 
@@ -455,7 +556,7 @@ described as though it had been seen.
 - [ ] Measure the backlog-versus-live gap as a number on a real topic — the ratio of records late under live consumption to records late under replay is a direct reading of how much lateness a pipeline absorbs
 
 - [ ] Recover the two dropped records instead of only counting them — the DataStream API has a late side output, and Flink SQL does not, so measure what `table.exec.emit.allow-lateness` actually does to the result
-- [ ] Kill the TaskManager mid-stream and confirm from the checkpoint what the counts are after recovery, which is the claim about exactly-once this page does not test
+- [ ] Repeat section 8's control with a sink that commits without checkpoints — `print`, or Kafka at at-least-once — which is the run that would actually isolate state recovery from the sink's commit protocol
 - [ ] Chart `numLateRecordsDropped` against the watermark bound over several values, to turn the latency/completeness trade in section 5 into a curve rather than two points
 
 ## Related
