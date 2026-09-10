@@ -3,7 +3,7 @@ title: Six things Linux does that look like bugs — the name is never the thing
 date: 2026-09-10
 domain: reference
 tags: [linux, filesystem, namespaces, kernel]
-summary: A file keeps being readable after chmod 000, 300 MB stays used after rm with nothing on disk to show for it, a file survives having its name deleted, /proc reports zero bytes and returns 1306, and one command turns a normal process into PID 1 running as root. All six are the same principle seen from different sides, and each is a production incident when it is not recognised.
+summary: A file keeps being readable after chmod 000, 300 MB stays used after rm with nothing on disk to show for it, a file survives having its name deleted, /proc reports zero bytes and returns 1306, and one command turns a normal process into PID 1 running as root. All six are the same principle seen from different sides, each is a production incident when it is not recognised, and each has a measured response — including truncation returning 200 MB with the writer's descriptor still open.
 source: handson
 env: Fedora CoreOS 43.20251110.3.1 · Linux 6.17.7-300.fc43 aarch64 · unprivileged user (uid 501) inside the Podman machine VM on macOS
 verified: 2026-09-10
@@ -191,6 +191,117 @@ root only to checks made inside its own user namespace.
 This is why an unprivileged user namespace is safe to hand out and why "the container runs as root" is
 an incomplete sentence — the question is always *which namespace's root*, and `uid_map` answers it.
 
+## What to do about each
+
+The six above are diagnoses. This is the response and the prevention for each, kept next to the
+evidence so the advice can be checked against it.
+
+### 1. A process keeps reading after `chmod 000`
+
+**Response.** Find who holds it and restart or stop them — the mode change did nothing to the
+descriptors that already exist:
+
+```bash
+lsof /path/to/file          # every process with it open, and the fd number
+```
+
+**Prevention.** Treat `chmod` as what section 1 showed it to be: a gate on *future* `open()` calls,
+not a revocation. If access has to end now, the reader has to go — `chmod` first so it cannot reopen,
+then restart it.
+
+### 2. `rm` freed nothing and the disk is still full
+
+**Response.**
+
+```bash
+lsof -n | grep deleted      # the holder, its PID, and the fd number
+```
+
+Restart the process, or if it must keep running, truncate the deleted file *through the descriptor*
+— `/proc/<pid>/fd/<n>` is a handle to it even after the name is gone:
+
+```bash
+ls -l /proc/<pid>/fd/<n>    # -> (deleted)
+: > /proc/<pid>/fd/<n>
+```
+
+```
+  after rm, held by pid 1816284 fd 6     df=35677968 KB
+  : > /proc/1816284/fd/6                 df=35473168 KB   <- returned, process still running
+```
+
+**Prevention.** Never `rm` a file something is writing to; truncate it. Measured on a 200 MB log held
+open by a writer:
+
+```
+  200MB log, held open           df=35677968 KB
+  --- rm ---
+  after rm, fd still held        df=35677968 KB   <- nothing returned
+  after the fd closes            df=35473168 KB
+  --- truncate ---
+  200MB again, held open         df=35677968 KB
+  : > app.log, fd still held     df=35473168 KB   <- returned immediately, size=0
+  writer keeps writing to fd     df=35473172 KB   size=11
+```
+
+**Truncation frees the blocks while the descriptor stays open, and the writer never notices.** For
+rotation, `logrotate` with `copytruncate` is this in configuration form; without it, `logrotate`
+renames the file and the daemon keeps writing to the renamed one until a `postrotate` signal makes it
+reopen — which is section 2 arranged on a schedule.
+
+### 3. A deleted file is still there
+
+**Response.** This is not a malfunction; it is the model. Before expecting space back, check both
+counts that keep an inode alive:
+
+```bash
+stat -c '%h' file           # link count — other names for the same inode
+lsof file                   # open descriptors
+```
+
+Space returns only when both reach zero. A file with a link count of 2 has another name somewhere;
+`find / -inum <inode>` locates it.
+
+**Prevention.** Know that `rm` is `unlink()`. Tools that promise to "delete" a file are removing one
+name, and a second name or a held descriptor keeps the data with no warning.
+
+### 4. `/proc` and `/sys` report zero bytes
+
+**Response.** Read them; never size them. `cat`, `head`, or a language-level read all trigger the
+kernel to generate the content. `ls -l`, `stat`, `du` and `find -size` all report the size of a file
+that is not stored anywhere, which is zero.
+
+**Prevention.** Exclude `/proc`, `/sys` and `/dev` from backups and from any scan that filters on
+size — not because they are empty, but because they are not files. A backup that includes `/proc`
+will either skip everything in it or try to copy `/proc/kcore`, which on this 6 GB VM reports:
+
+```
+  /proc/kcore   279274992914432 bytes   (279 TB)
+  MemTotal      6.0 GB
+```
+
+That is the kernel's virtual address space, not the machine's memory, and a tool that sizes before it
+reads will plan for 279 TB.
+
+### 5 & 6. "It runs as root" inside a container
+
+**Response.** Establish *which* root before touching anything. From the host:
+
+```bash
+cat /proc/<pid>/uid_map     # inside-uid  outside-uid  count
+grep ^Uid /proc/<pid>/status
+```
+
+`0 501 1` means the container's root is host uid 501 with no other privilege, and every permission
+question is answered against 501. The host's own PID 1 reads `0 0 4294967295` — root mapped to root
+over the full range — and a container whose `uid_map` says that is running as the host's root, which
+is the situation to be worried about.
+
+**Prevention.** Run containers in a user namespace by default — rootless Podman does this without
+being asked, which is why the demonstration above needed no `sudo`. When a container must be root on
+the host, that fact belongs in the deployment manifest where a reviewer sees it, not in the absence of
+a flag.
+
 ## Verification checklist
 
 - [x] The demonstrations run as **uid 501**, so the permission check in section 1 is real rather than bypassed
@@ -203,6 +314,11 @@ an incomplete sentence — the question is always *which namespace's root*, and 
 - [x] Two consecutive reads of `/proc/self/status` report **different PIDs** (1814659, 1814662)
 - [x] `unshare` puts the process at **PID 1 with 4 visible processes** against **1814723 and 165** outside, on an identical kernel string
 - [x] The same process is **uid 0 inside and 501 outside**, with `uid_map` reading `0 501 1`
+- [x] `rm` on a 200 MB log held open returns **nothing** until the descriptor closes; `: > app.log` on the same setup returns **204800 KB immediately** with the descriptor still open
+- [x] After truncation the writer continues on the same descriptor — `size=11` after one more write
+- [x] `: > /proc/<pid>/fd/<n>` on a deleted-but-held file returns the space with the process still running
+- [x] `/proc/kcore` reports **279 TB** on a 6 GB VM — the virtual address space, not memory
+- [x] The host's PID 1 has `uid_map` **`0 0 4294967295`**
 
 ## Where this bit us
 
@@ -225,7 +341,7 @@ sentence: **the name is not the thing.**
 ## Follow-ups
 
 - [ ] Add the memory equivalent — `VmRSS` against `VmSize`, and a `malloc` that succeeds without any page being backed, since overcommit is the same "the name is not the thing" shape applied to address space
-- [ ] Demonstrate the truncate-versus-`rm` fix for section 2 by rotating a log both ways and watching `df`, which is the action item that section only describes
+- [ ] Measure `logrotate` with and without `copytruncate` against a live writer, since the section above describes the difference and only measured the manual form
 - [ ] Repeat section 5 with a network namespace, where the same process gets a different `ip addr` and the isolation is easier to see than a PID renumbering
 - [ ] Check whether `unshare --user` is permitted on the distributions this repository actually deploys to, since some ship `kernel.unprivileged_userns_clone=0` and the whole section becomes root-only there
 
