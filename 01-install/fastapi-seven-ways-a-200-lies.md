@@ -3,13 +3,13 @@ title: FastAPI — seven ways a 200 lies, one small app, each one broken and fix
 date: 2026-09-10
 domain: install
 tags: [fastapi, python, api, reliability]
-stack: [fastapi, pydantic, uvicorn, sqlite, python]
+stack: [fastapi, pydantic, uvicorn, sqlite, postgresql, python]
 summary: One FastAPI service with seven endpoints, each written the way it usually gets written and then broken on purpose. A swallowed exception returns 200 with the error in the body, a route that forgot its auth dependency returns 200 to anyone, two concurrent payments both return 200 and only one is deducted, a renamed upstream field downgrades a paying user to free with a 200, and a health check keeps returning 200 with the database gone. Each has a fix, and each fix was watched to change the answer.
 source: handson
-env: FastAPI 0.141.1 · Pydantic 2.13.5 · uvicorn 0.52.4 · httpx 0.28.1 · Python 3.13 · SQLite in-memory · macOS 26.6.2 arm64
+env: FastAPI 0.141.1 · Pydantic 2.13.5 · uvicorn 0.52.4 · httpx 0.28.1 · psycopg 3.3.5 with psycopg_pool 3.3.1 · Python 3.13 · SQLite in-memory and PostgreSQL 17.11 (podman) · macOS 26.6.2 arm64
 verified: 2026-09-10
 verifiability: partial
-verifiability-note: A single in-memory SQLite behind a single uvicorn worker, so the consistency race is real but narrower than one against a networked database with connection pooling, and the recovery section takes the database away by closing a connection rather than by killing a server. The upstream service is a function inside the app; nothing here exercises a network timeout or a partial response.
+verifiability-note: The consistency race is measured on both an in-memory SQLite and a PostgreSQL 17 behind a 16-connection pool, but both sit on one machine with one uvicorn worker, so the timings are relative rather than a capacity figure. The recovery section takes the database away by closing a connection rather than by killing a server, and the upstream service is a function inside the app; nothing here exercises a network timeout or a partial response.
 duration: 60–90 min
 risk: low
 ---
@@ -201,6 +201,62 @@ def pay_atomic(amount: int):
 `rowcount` reports what it decided. Pydantic validates the shape of a request; it cannot validate the
 order of two of them — that is the database's job, and only if the query is written to let it.
 
+### The same race on PostgreSQL, with a pool and ten requests
+
+SQLite behind one process understates this. PostgreSQL 17 behind a psycopg pool of 16 connections,
+ten concurrent payments of 10 from a balance of 100 — the correct end state is 0 with exactly ten
+successes, and the invariant `100 − 10 × successes = final` is the check:
+
+```
+  pay          200×10   final 80    invariant broken: ten successes should leave 0
+  pay          200×10   final 80    invariant broken
+  pay          200×10   final 80    invariant broken
+```
+
+**Ten payments accepted, twenty deducted.** With a real pool every request gets its own connection,
+all ten read 100 in the same instant, and eight of the ten writes are overwritten by the ninth. The
+two-request SQLite case lost one update; this loses eight, and every one of the ten returned `200`.
+
+PostgreSQL offers three ways out, and they are not equivalent:
+
+```python title="pgapp.py"
+# one statement: the check is in the WHERE, and RETURNING says what happened
+UPDATE acct SET balance=balance-%s WHERE id='u1' AND balance>=%s RETURNING balance
+
+# lock the row: the second reader waits until the first writer commits
+SELECT balance FROM acct WHERE id='u1' FOR UPDATE
+
+# stricter isolation: the same racy code, but the loser is told
+SET TRANSACTION ISOLATION LEVEL REPEATABLE READ
+```
+
+```
+  variant       wall ms   p50 ms   max ms   200s   final   invariant
+  pay                90       82       86     10      80    broken
+  pay-atomic         31       24       29     10       0    OK
+  pay-lock         1320      352     1268     10       0    OK
+  pay-rr            133       92      123      1      90    OK
+```
+
+Read the four rows together, because each one is a different lesson:
+
+- **The racy version is the second fastest, and that is why it survives review.** Ninety milliseconds
+  for ten parallel requests, no waiting, no errors — and 80% of the money never left the account.
+- **The atomic statement is both correct and fastest.** The database does check-and-write as one
+  row-locked operation with no gap for anyone to run in, and returns in a third of the time the race
+  took.
+- **`FOR UPDATE` is correct and serialises everything behind the slowest step.** Every request holds
+  the lock through its 50 ms "calculation", so the tenth waited 1.27 seconds — the lock turns one
+  request's gap into everyone's. It is the right tool when the write genuinely depends on a computation
+  over the read value that cannot be expressed in one statement, and the wrong tool otherwise.
+- **`REPEATABLE READ` keeps the money right by refusing nine of ten.** `SerializationFailure` on the
+  losers, `409` to the client, invariant intact — and the retry is now the caller's problem. Correct and
+  loud, which is strictly better than correct and silent, and still not what a checkout wants.
+
+**The invariant is what separates "wrong" from "unfriendly".** `pay-rr` fails nine requests and the
+ledger balances; `pay` succeeds all ten and it does not. A test that counts `200`s would prefer the
+broken one.
+
 ## 5. Failure recovery — the health check that never notices
 
 ```python title="app.py"
@@ -332,6 +388,9 @@ names the field.
 - [x] On a router carrying the dependency, `/admin2/export` returns **403** with no per-route declaration
 - [x] Two concurrent `/pay/50` from a balance of 100 both return **200** and leave **50** — three runs out of three
 - [x] `/pay-atomic/50` under the same race leaves **0** — three out of three
+- [x] On PostgreSQL 17 with a 16-connection pool, ten concurrent `pay/10` calls all return **200** and leave **80** — eight updates lost, three runs of three
+- [x] `pay-atomic`, `pay-lock` and `pay-rr` all hold the invariant `100 − 10 × successes = final`
+- [x] `pay-atomic` is the fastest at **31 ms wall**; `pay-lock` serialises to **1320 ms** with the last request waiting 1268 ms; `pay-rr` rejects **9 of 10** with `409`
 - [x] With the database closed, `/healthz` returns **200** while `/balance` returns **500**, and does not recover on its own
 - [x] `/healthz-real` returns **503** in that state
 - [x] An upstream rename of a required field gives **500**; a rename of a field with a default gives **200 with `plan: "free"`**
@@ -368,7 +427,7 @@ defaulted field and the coerced boolean all share it.
 
 ## Follow-ups
 
-- [ ] Repeat section 4 against PostgreSQL with a connection pool, where the race window is wider and `SELECT … FOR UPDATE` is the alternative to the atomic statement
+- [ ] Add client-side retry to `pay-rr` and measure how many attempts ten payments need under REPEATABLE READ, which is the cost that section 4 leaves with the caller
 - [ ] Add a timeout and a partial-response case to section 6, since a slow or truncated upstream is a different failure from a renamed field
 - [ ] Make section 2's claim a check — parse the traced log and assert every `end` has a matching `start` with the same id
 - [ ] Wire `/healthz-real` into a kind cluster's readiness probe and confirm the pod actually leaves the endpoint list when the database goes
