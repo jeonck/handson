@@ -36,6 +36,9 @@ risk: medium
 > are the whole point of the document and are argued for below rather than presented as defaults.
 > **No command output is quoted anywhere in this document**, because none was observed.
 
+See [[onprem-worker-drain-stateful-workloads]] — the manual-procedure half of the Drain Cleaner
+follow-up below, synthesized from this document but not yet run.
+
 Kafka on Kubernetes is an operator problem, not a StatefulSet problem — broker identity, per-broker
 storage, certificate rotation and rolling restarts in an order that does not lose a quorum are all
 things you would otherwise write yourself. Strimzi does that. Since 0.46 it runs Kafka in **KRaft
@@ -1056,7 +1059,7 @@ Kafka cluster that never becomes ready rather than as an address problem.
 
 - [ ] Add authentication and authorization before anything real is on this cluster — a TLS listener with no auth means any LAN host with `ca.crt` has full read/write. `KafkaUser` with `scram-sha-512` plus a `simple` authorizer, and the `userOperator` that §4 deliberately omits. Draft as [[kafka-strimzi-auth-onprem]] 📅 2026-08-31
 - [ ] Measure the resource requests in §1.2 instead of guessing them — `kubectl top pod -n kafka` under a `kafka-producer-perf-test.sh` run, then correct the tables here and the memory line in [[schedulable-node-budget]] step 3 📅 2026-09-15
-- [ ] Install the Strimzi Drain Cleaner, or write the manual pre-drain procedure into [[k8s-node-drain-replace]] — on two schedulable nodes a drain leaves a broker unschedulable, and the generated PDB does not prevent that 📅 2026-09-30
+- [ ] Install the Strimzi Drain Cleaner, or run and verify the manual pre-drain procedure — on two schedulable nodes a drain leaves a broker unschedulable, and the generated PDB does not prevent that 📅 2026-09-30, overdue. The manual procedure is drafted as Branch B of [[onprem-worker-drain-stateful-workloads]], reasoned from this document but not yet run — still open until one of the two actually happens
 - [ ] Re-decide the storage and topology when a fourth machine arrives: at 3 schedulable nodes, replication factor 3 with `min.insync.replicas` 2 becomes possible, Longhorn's second replica starts being usable, and the controller count would need to have been 3 already — which it is, deliberately. Also derive the 20 GB per broker from a throughput and retention estimate rather than from what fits
 
 ## Related
@@ -1067,4 +1070,5 @@ Kafka cluster that never becomes ready rather than as an address problem.
 [[metallb-l2-onprem]] — supplies the three LoadBalancer addresses, and its false-pass lesson is reused verbatim in §6: any test of the external listener from inside the cluster or from a cluster node passes whether or not the mechanism works.
 [[ingress-nginx-onprem]] — already holds one address from the same pool, and would be the route to a zero-address Kafka listener if it were running with `--enable-ssl-passthrough`, which it is not.
 [[k8s-node-drain-replace]] — draining a worker here removes a broker, a controller, and that broker's only copy of its log directory at once. Read before any planned maintenance.
+[[onprem-worker-drain-stateful-workloads]] — the onprem-specific drain procedure this document's Drain Cleaner follow-up asked for, built on top of the generic mechanics above.
 [[pod-crashloopbackoff]] — where a broker that will not start, or one stuck `Pending` on the anti-affinity rule, gets diagnosed.

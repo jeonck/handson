@@ -17,6 +17,9 @@ risk: low
 > yet** — each source was verified separately, and the sequence below is assembled from them. Fill in
 > `verified` after the first real run.
 
+See also [[onprem-worker-drain-stateful-workloads]] — draining takes the budget below from 2 to 1 for
+the duration, which is the same problem this document describes with a timer on it.
+
 Run this **before installing any add-on that places one workload per node, replicates across nodes,
 or uses anti-affinity** — storage, ingress controllers, HA control planes for other software. Also
 after adding or removing a node, and after any change to node taints.
@@ -227,3 +230,4 @@ that volume runs perfectly, so no workload-level check will catch it.
 [[metallb-l2-onprem]] — a counter-example worth knowing: its `speaker` runs on every node including the tainted one.
 [[pod-crashloopbackoff]] — where this surfaces if you skip it: `node(s) had untolerated taint` in the scheduling branch.
 [[k8s-node-drain-replace]] — draining reduces the budget by one for the duration, which is the same problem with a timer on it.
+[[onprem-worker-drain-stateful-workloads]] — what to do about that timer when Longhorn or Kafka is on the node being drained.

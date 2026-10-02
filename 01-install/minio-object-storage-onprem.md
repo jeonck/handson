@@ -33,6 +33,10 @@ risk: medium
 > **Read §0 before you install anything.** The project's status changed materially in 2026 and it
 > changes what this document is worth.
 
+See [[onprem-worker-drain-stateful-workloads]] for planning the node drain this document's Related
+section points at — it answers what [[k8s-node-drain-replace]] does not on a 2-schedulable-node
+budget.
+
 An on-prem cluster has no S3. Everything downstream assumes one — Velero, database dump targets,
 CI artifacts, Loki and Thanos chunks, and eventually [[longhorn-backup-target-onprem]]. MinIO is the
 usual answer because it speaks the S3 API and runs on whatever disks you have.
@@ -870,3 +874,4 @@ one used here; no public DNS is involved.
 at this MinIO.
 [[k8s-node-drain-replace]] — draining the node holding MinIO's Longhorn replica is a storage
 operation, and with one MinIO pod it is also an outage. Plan it there.
+[[onprem-worker-drain-stateful-workloads]] — the onprem, 2-schedulable-node version of that plan; [[k8s-node-drain-replace]] assumes an autoscaler this cluster does not have.

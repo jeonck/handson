@@ -21,6 +21,9 @@ risk: medium
 > [Where this bit us](#where-this-bit-us). The harness is at
 > `terraform-aws-lab/lab20-onprem-k8s-verify` with `attach_data_volumes = true`.
 
+See [[onprem-worker-drain-stateful-workloads]] — the node-maintenance runbook asked for in
+Follow-ups below, drafted but not yet run.
+
 A cluster with no StorageClass answers every PVC with `Pending`. On a cloud provider a CSI driver comes with the platform; on your own hardware the disks are already in the machines and nothing is presenting them to Kubernetes. Longhorn does that — it takes local disk space on each node, replicates a volume across nodes, and exposes it over iSCSI to whichever node the pod lands on.
 
 Assumes the cluster from [[onprem-3node-kubeadm-ubuntu]] — three nodes, Calico, one flat LAN.
@@ -549,11 +552,12 @@ See [[k8s-node-drain-replace]] before draining a node that holds replicas.
 - [ ] Configure a backup target — Longhorn snapshots live on the same disks as the data, so they are not a backup. S3 or an NFS share off the cluster. Procedure drafted in [[longhorn-backup-target-onprem]], not yet run
 - [ ] Put basic auth or an ingress with real authentication in front of the UI before anyone else needs it
 - [ ] Decide the replica count per workload rather than globally — a rebuildable cache does not need three copies
-- [ ] Write a runbook for planned node maintenance with replicas in play, since draining is no longer a pure Kubernetes operation
+- [x] Write a runbook for planned node maintenance with replicas in play — drafted as [[onprem-worker-drain-stateful-workloads]] 2026-10-02, unverified until someone runs it
 
 ## Related
 
 [[onprem-3node-kubeadm-ubuntu]] — the cluster this runs on. This document answers the storage follow-up left open there.
 [[metallb-l2-onprem]] — needed if the UI or any storage-backed service should hold a LAN address.
 [[k8s-node-drain-replace]] — draining a node now moves storage replicas, not just pods. Read this first.
+[[onprem-worker-drain-stateful-workloads]] — the runbook this document's Follow-ups asked for, drafted but not yet run.
 [[pod-crashloopbackoff]] — a PVC stuck at `Pending` shows up there as a pod that never leaves `ContainerCreating`.
