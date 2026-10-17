@@ -146,6 +146,14 @@ repository already recorded where that road ends.
 **So this page stops at the decision and does not pretend to be an install.** The install is one
 spare machine away, and the switch-dependent half is two machines and a managed switch away.
 
+> **Since written:** the spare machine turned out to be rentable by the hour.
+> [[proxmox-on-ec2-bare-metal]] builds the whole thing on an `a1.metal` instance for **$0.29** and
+> confirms the parts this page could only reason about — Proxmox VE 9.2 arm64 installs and runs, and
+> its guests are genuinely KVM-accelerated. It also found that the snapshot loop, the main argument
+> above, **does not work on the storage a Debian-based install leaves you with** and reports plausible
+> timings while failing. The sorting below stands; the first bullet under "Would be settled" now has a
+> condition attached.
+
 ## Verification checklist
 
 - [x] **15** documents here assume three nodes already exist
@@ -178,8 +186,7 @@ is not what the pitch said.
 
 ## Follow-ups
 
-- [ ] Install Proxmox VE 9.2 on a spare machine and redo `onprem-3node-kubeadm-ubuntu` on it, recording which of that page's four unproven items actually change state
-- [ ] Measure a snapshot-and-rollback cycle around `kubeadm upgrade` and compare the wall-clock cost against the EC2 rebuild the current page implies
+- [ ] Measure a snapshot-and-rollback cycle around `kubeadm upgrade` on the rented host, now that proxmox-on-ec2-bare-metal has established what the cycle costs and which storage it needs
 - [ ] Detach a virtual disk from a running Longhorn node and record the replica rebuild, which is the test `longhorn-storage-onprem` currently trusts
 - [ ] Settle whether a VLAN-aware bridge changes anything for MetalLB L2, or whether the answer is simply "two machines and a switch" — the page above reasons it is the latter and has not shown it
 
@@ -189,4 +196,5 @@ is not what the pitch said.
 [[longhorn-storage-onprem]] — replication trusted rather than tested, and the disk-detach drill that would test it.
 [[metallb-l2-onprem]] — the gap a single hypervisor host does not close.
 [[harbor-installer-on-podman-arm64]] — where the emulation road ends, and why it is not the alternative here.
+[[proxmox-on-ec2-bare-metal]] — the install this page declined to guess at, done on rented metal for 29 cents.
 [[pulumi-kubernetes-outputs-and-drift]] — the IaC evidence standard this lab would be rebuilt to meet.
