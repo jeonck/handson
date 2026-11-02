@@ -36,6 +36,11 @@ what makes this cluster interesting: Trino's whole performance model assumes hea
 [[onprem-3node-kubeadm-ubuntu]] gives it two schedulable nodes of 2 vCPU / 4 GB that already run
 other things.
 
+**The cluster's S3 decision changed after this was written.** [[s3-object-storage-options]] decided
+Garage over MinIO on 2026-08-16, the same day this document was written against MinIO. The catalog
+block in §4 below is the pre-decision config; [[s3-consumer-wiring]] is the procedure for moving it
+to the endpoint actually running.
+
 This document stands up Trino against MinIO ([[minio-object-storage-onprem]]) using the Iceberg
 connector with a **JDBC catalog** in PostgreSQL ([[postgresql-cnpg-onprem]]), exposes the UI and the
 JDBC/HTTP endpoint through the single ingress address, and ends with a query that physically reads
@@ -690,12 +695,15 @@ turns into pod restarts mid-query instead of slow queries. ([configmap-coordinat
       both were written the same day as this and both are also unrun, so three unverified documents
       currently agree with each other on paper and nowhere else. Run the storage and database ones
       first; this one cannot be followed before they are 📅 2026-08-30
+- [ ] Run [[s3-consumer-wiring]] Step 1 to move the `lake` catalog's `s3.endpoint` from MinIO to
+      Garage — the procedure is written, nobody has run it against this document's catalog 📅 2026-09-15
 
 ## Related
 
 [[onprem-3node-kubeadm-ubuntu]] — the cluster underneath. Its node count and its control-plane taint decision are what force the single-worker layout above.
 [[schedulable-node-budget]] — Trino wants two nodes' worth of memory on a cluster that has two nodes total. This is where that competition gets settled rather than re-argued per add-on.
 [[minio-object-storage-onprem]] — the object storage this reads from. §2 assumes a bucket and a scoped user created there, and its standalone-on-Longhorn layout is what `s3.path-style-access` above is talking to.
+[[s3-consumer-wiring]] — the procedure for moving §4's catalog block from this endpoint to Garage, the one actually decided on.
 [[postgresql-cnpg-onprem]] — holds the Iceberg JDBC catalog. §3 assumes the `-rw` service of a healthy CNPG cluster from it, and its own memory budget is competing with Trino's on the same two nodes.
 [[ingress-nginx-onprem]] — the single LAN address the UI and the JDBC endpoint arrive on, and the source of the `nginx` IngressClass used above.
 [[cert-manager-onprem]] — issues `trino-tls` from the internal CA. Its root must be in the trust store of any JDBC client, which is a step browsers let you skip and drivers do not.

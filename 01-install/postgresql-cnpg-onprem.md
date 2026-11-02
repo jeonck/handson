@@ -35,6 +35,12 @@ Assumes the cluster from [[onprem-3node-kubeadm-ubuntu]], Longhorn from [[longho
 and cert-manager from [[cert-manager-onprem]]. Out of scope: PgBouncer connection pooling (see
 Follow-ups), monitoring and alerting, major-version upgrades, and tuning beyond a starting point.
 
+**The cluster's S3 decision changed after this was written.** [[s3-object-storage-options]] decided
+Garage over MinIO on 2026-08-16, the same day this document was written. §3's `ObjectStore`
+`endpointURL` below is the pre-decision config, and it never named the CA-trust field it said the
+MinIO endpoint would need. [[s3-consumer-wiring]] Step 3 is the procedure for moving to Garage —
+which needs no CA trust in-cluster, removing the question rather than answering it.
+
 ---
 
 ## 0. Decide these four things before you install
@@ -1007,9 +1013,14 @@ binaries; with the plugin those live in a sidecar. ([postgres-containers](https:
 - [ ] Benchmark `longhorn-db` (one replica) against `longhorn` (two) with `pgbench` before the
       metadata store is load-bearing. The storage page asks for exactly this and section 0.3 picks a
       side on reasoning alone 📅 2026-09-30
+- [ ] Run [[s3-consumer-wiring]] Step 3 against `pg-objectstore.yaml` and confirm a real
+      `barman-cloud-backup` lists under `backup-list` against Garage through the operator's
+      `ObjectStore` CRD — only `barman-cloud` run by hand has been proven against Garage so far, not
+      through this plugin 📅 2026-09-15
 
 ## Related
 
+[[s3-consumer-wiring]] — the procedure for moving §3's `endpointURL` from this MinIO design to Garage, and why it removes the CA-trust question §3 left unanswered.
 [[onprem-3node-kubeadm-ubuntu]] — the cluster this targets, and the source of the Kubernetes 1.31.14 that section 0.1 finds outside CloudNativePG's support matrix.
 [[schedulable-node-budget]] — the standing decision to keep the control-plane taint, which is what caps this at `instances: 2`. CloudNativePG adds a third failure shape to the table there: silent co-location rather than `Pending` or `degraded`.
 [[longhorn-storage-onprem]] — supplies the default StorageClass. Section 2 adds a single-replica class beside it rather than changing it, for the write-amplification reason in 0.3.

@@ -14,7 +14,9 @@ risk: medium
 
 > **Superseded as the default answer, 2026-08-16.** [[s3-object-storage-options]] compared this
 > product against Rook/Ceph and Garage for this cluster and **decided on Garage** — see
-> [[garage-object-storage-onprem]] — on the strength of the §0 finding below.
+> [[garage-object-storage-onprem]] — on the strength of the §0 finding below. [[s3-consumer-wiring]]
+> is the procedure for moving a client written against this document's `https://` + CA-trust design
+> onto the Garage one.
 >
 > This document stays, and stays accurate. It is the record of the MinIO investigation, and it is
 > what you come back to if AIStor is ever bought: that path was rejected on cost, not on capability,

@@ -399,7 +399,7 @@ capability answer will retry it. (same page)
 
 ## Follow-ups
 
-- [ ] Re-point the four consumers at this endpoint once it exists — [[trino-query-engine-onprem]], [[spark-on-k8s-onprem]], [[postgresql-cnpg-onprem]] and [[airflow-orchestration-onprem]] currently carry `https://` and a CA-trust requirement written for MinIO, which Garage does not need in-cluster 📅 2026-08-30
+- [ ] Re-point the four consumers at this endpoint — the procedure is now written, [[s3-consumer-wiring]], but nobody has run it. [[trino-query-engine-onprem]], [[spark-on-k8s-onprem]], [[postgresql-cnpg-onprem]] and [[airflow-orchestration-onprem]] still carry `https://` and a CA-trust requirement written for MinIO, which Garage does not need in-cluster 📅 2026-08-30
 - [ ] Set resource requests from `kubectl top pod` under a real load — upstream publishes no minimum, so the first numbers have to be measured rather than copied
 - [x] Prove barman-cloud against Garage — done 2026-08-17: `check-wal-archive`, WAL archive and restore byte-identical, `barman-cloud-backup`, `backup-list`, and a `barman-cloud-restore` into a separate cluster that came up with exactly the rows present at backup time and none added after it, with WAL fetched back from Garage during recovery
 - [ ] Prove **Longhorn's backupstore** against Garage. **Could not be done on kind:** `iscsid` refuses to start inside a rootless-podman node — the unit is skipped by `ConditionVirtualization=!private-users`, and run by hand it exits with `failed to mlockall`. Needs a rootful container runtime, a Linux host, or real VMs 📅 2026-09-15
@@ -408,6 +408,8 @@ capability answer will retry it. (same page)
 
 ## Related
 
+[[s3-consumer-wiring]] — the standard procedure for re-pointing the four consumers below at this
+endpoint instead of the MinIO one they were written against.
 [[s3-object-storage-options]] — why Garage, what it gives up, and what would reverse the decision.
 [[minio-object-storage-onprem]] — the incumbent this replaces. Kept as the record; its scoped-key checks do not port directly, because Garage has no bucket policies.
 [[longhorn-storage-onprem]] — owns redundancy under this deployment, which is the whole reason factor 1 is defensible.

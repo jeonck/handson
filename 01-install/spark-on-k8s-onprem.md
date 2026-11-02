@@ -30,6 +30,10 @@ This document stands up the Kubeflow Spark Operator on the cluster from
 MinIO for input and output, submits a job, and then answers the question that catches everyone once:
 where the logs and the Spark UI are after the driver pod has exited.
 
+**The cluster's S3 decision changed after this was written.** [[s3-object-storage-options]] decided
+Garage over MinIO on 2026-08-16, the same day this document was written. Section 4.3's S3A settings
+below are the pre-decision config; [[s3-consumer-wiring]] Step 2 is the procedure for moving them.
+
 Out of scope: Spark Connect, streaming, dynamic allocation with an external shuffle service, GPUs,
 Volcano/YuniKorn gang scheduling, and multi-tenant queueing. All are supported by this operator; none
 of them fit on two 2-vCPU workers.
@@ -970,10 +974,16 @@ to `true`, so executor logs are unavailable by the time you go looking. Section 
 
 ## Follow-ups
 
-- [ ] Reconcile the endpoint with [[minio-object-storage-onprem]] — that document terminates the S3 API with TLS from an internal CA, and section 4.3 here talks plaintext to the ClusterIP. Decide which, and if TLS, get the CA into the Spark image's truststore 📅 2026-08-23
+- [x] Reconcile the endpoint with [[minio-object-storage-onprem]] — done: §4.3 now sets
+      `connection.ssl.enabled: "true"` to match MinIO's TLS-only S3 port, and names the truststore
+      step as the one most likely to be wrong on first attempt. Superseded 2026-08-16 by
+      [[s3-object-storage-options]]'s decision to use Garage instead, which needs neither TLS nor a
+      truststore in-cluster — see [[s3-consumer-wiring]] Step 2 for the resulting config and why the
+      truststore step drops out entirely
 - [ ] Build and push an internal Spark image with `hadoop-aws` 3.4.1 and AWS SDK bundle 2.25.53 baked in, so jobs stop resolving from Maven Central at pod start 📅 2026-08-30
 - [ ] Measure real free memory on both workers with Longhorn, ingress-nginx and Argo CD resident, and record the number in [[schedulable-node-budget]] — the executor sizing above is arithmetic against `allocatable`, not a measurement against this cluster 📅 2026-08-23
 - [ ] Decide a retention rule for `s3a://<BUCKET>/spark-events/` before the History Server has a year of runs in it — nothing prunes event logs, and the server reads the whole prefix 📅 2026-09-13
+- [ ] Run [[s3-consumer-wiring]] Step 2 against this SparkApplication and confirm a real job's write survives the `directory` committer path against Garage — only a 32 MiB `aws s3 cp` has been watched work against this endpoint, not Spark's own commit protocol 📅 2026-09-15
 
 ## Related
 
@@ -981,5 +991,6 @@ to `true`, so executor logs are unavailable by the time you go looking. Section 
 [[schedulable-node-budget]] — Spark is the add-on that consumes the budget rather than merely respecting it; check the count there before choosing an executor count here.
 [[longhorn-storage-onprem]] — the default StorageClass, and the one place shuffle data must not be sent. Section 3 explains why replication is exactly wrong for it.
 [[minio-object-storage-onprem]] — the object store this reads and writes, including the event logs; it is also where the bucket, the credentials and the TLS decision that section 4 depends on are made.
+[[s3-consumer-wiring]] — the procedure for moving section 4.3's S3A settings from this MinIO design to Garage, the endpoint actually decided on.
 [[ingress-nginx-onprem]] — needed if the Spark UI or the History Server should have an address that is not a port-forward, and neither has authentication of its own.
 [[k8s-node-drain-replace]] — draining a worker mid-job kills executors on it; Spark will re-run the lost tasks on the remaining node, which on two nodes means the job gets half as wide.

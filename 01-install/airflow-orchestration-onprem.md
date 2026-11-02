@@ -32,6 +32,12 @@ the UI behind the single ingress address, and one DAG that writes and reads back
 Out of scope: multi-tenant RBAC, Airflow's own high availability (two schedulers on two nodes is not
 HA, it is two things to lose at once), KEDA autoscaling, and anything that needs a second cluster.
 
+**The cluster's S3 decision changed after this was written.** [[s3-object-storage-options]] decided
+Garage over MinIO on 2026-08-16, the same day this document was written. §5's connection and the
+smoke-test DAG in §8 below are the pre-decision config; [[s3-consumer-wiring]] Step 4 is the
+procedure for moving both — note that the connection ID itself has to change, not only its
+`endpoint_url`.
+
 ## Airflow 3 is not Airflow 2, and most guidance you will find is for 2.x
 
 Chart 1.22.0 deploys Airflow 3.2.2 by default (`defaultAirflowTag: "3.2.2"`, `airflowVersion:
@@ -833,14 +839,19 @@ alone, and whatever you set is stored in the Helm release manifest either way. S
 
 - [ ] Reconcile section 1 against [[postgresql-cnpg-onprem]], written the same day — confirm the service name, the `Pooler` question, and that the connection secret this chart wants matches what that document produces. **Not yet cross-read against
       link to yet 📅 2026-08-23
-- [ ] Reconcile section 5 against [[minio-object-storage-onprem]], written the same day — it terminates TLS on the S3 port, so the connection is `https` and the worker needs the internal CA. Confirm the scoped access key for Airflow
-      rather than handing it the root credentials 📅 2026-08-23
+- [x] Reconcile section 5 against [[minio-object-storage-onprem]] — superseded 2026-08-16 by
+      [[s3-object-storage-options]]'s decision to use Garage instead, which needs no CA trust
+      in-cluster. [[s3-consumer-wiring]] Step 4 has the corrected connection and the scoped-key
+      source (`garage key create`, not the root credentials)
 - [ ] Decide in [[schedulable-node-budget]] whether Airflow's six long-lived pods fit alongside Argo
       CD and MinIO on two nodes, or whether this is the add-on that finally buys a third machine
       📅 2026-08-30
 - [ ] Settle the log-retention question before the first month of runs: `delete_local_logs: "True"`
-      moves logs to MinIO but nothing expires them there, and the chart's `logGroomerSidecar` only
-      grooms what is local
+      moves logs to the object store but nothing expires them there, and the chart's
+      `logGroomerSidecar` only grooms what is local
+- [ ] Run [[s3-consumer-wiring]] Step 4 — rename the connection, update `remote_log_conn_id` and the
+      smoke-test DAG's `ObjectStoragePath`, and confirm a log written after cutover reads back from
+      the UI, not only from the worker that wrote it 📅 2026-09-15
 
 ## Related
 
@@ -856,6 +867,7 @@ than tasks, verified locally rather than on this cluster.
 [[postgresql-cnpg-onprem]] — where the metadata database comes from. Not written yet.
 [[minio-object-storage-onprem]] — the object storage the smoke-test DAG and remote logging both use.
 Not written yet.
+[[s3-consumer-wiring]] — the procedure for moving §5's connection and the smoke-test DAG from this MinIO design to Garage, the endpoint actually decided on.
 [[ingress-nginx-onprem]] — the single ingress address the api-server is published behind, and the
 `nginx` IngressClass referenced in the values file.
 [[cert-manager-onprem]] — supplies the `internal-ca` ClusterIssuer named in the ingress annotation.
